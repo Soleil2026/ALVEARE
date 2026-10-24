@@ -1,0 +1,23 @@
+# ALVEARE Core — infra locale (E1). Prod réelle : chartes/serveurs dédiés.
+# Secrets : en dev via variables d'env locales ; en prod via Infisical (ADR-0002).
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    command: start-dev
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin-dev      # jetable, dev local uniquement
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"   # console admin http://localhost:8080
+  redis:
+    image: redis:8-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:

@@ -2,8 +2,12 @@
   "name": "alveare",
   "private": true,
   "version": "0.0.1",
+  "packageManager": "pnpm@12.3.4",
   "scripts": {
     "dev:identity": "pnpm --filter @alveare/identity dev",
-    "dev:web": "pnpm --filter @alveare/web-admin dev"
+    "dev:web": "pnpm --filter @alveare/web-admin dev",
+    "build:identity": "pnpm --filter @alveare/identity build",
+    "build:contracts": "pnpm --filter @alveare/contracts build",
+    "test": "pnpm -r --if-present test"
   }
 }

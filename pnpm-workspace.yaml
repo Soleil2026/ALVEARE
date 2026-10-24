@@ -4,5 +4,8 @@ packages:
   - web/*
 
 # scripts de post-installation autorisés (esbuild est requis par tsx)
+allowBuilds:
+  esbuild: set this to true or false
+
 onlyBuiltDependencies:
   - esbuild
