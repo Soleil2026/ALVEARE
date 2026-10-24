@@ -32,6 +32,7 @@ fi
 $PSQL -d alveare_core -c "CREATE SCHEMA IF NOT EXISTS identity AUTHORIZATION alveare_core_app"
 $PSQL -d alveare_core -c "CREATE SCHEMA IF NOT EXISTS audit AUTHORIZATION alveare_core_app"
 $PSQL -d alveare_core -v ON_ERROR_STOP=1 <<SQL
+SET ROLE alveare_core_app;
 CREATE TABLE IF NOT EXISTS audit.events (
   id           bigserial PRIMARY KEY,
   at           timestamptz NOT NULL DEFAULT now(),
@@ -40,5 +41,6 @@ CREATE TABLE IF NOT EXISTS audit.events (
   target       text,
   details      jsonb
 );
+RESET ROLE;
 SQL
 echo "schémas identity + audit : OK"
