@@ -1,15 +1,15 @@
 /**
  * web-admin — GET /login : démarre le flow OIDC (code + PKCE).
- * Le stash {verifier, state, nonce} est chiffré dans un cookie
- * temporaire httpOnly (5 min) — rien de devinable côté client.
- * Zone Red : revue indépendante obligatoire.
+ * Le verifier/nonce sont mémorisés CÔTÉ SERVEUR, indexés par `state`
+ * (lib/flowStore : single-use, TTL 5 min) — plus aucune donnée de
+ * sécurité dans un cookie de transport. Zone Red : revue indépendante
+ * obligatoire.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { buildAuthorizeUrl, newCodeVerifier, newState } from '../../lib/oidc';
-import { SESSION_COOKIE, encodeStash, stashCookieOptions } from '../../lib/session';
-
-export const TEMP_COOKIE = 'alv_login';
+import { putFlow } from '../../lib/flowStore';
+import { SESSION_COOKIE, TEMP_COOKIE } from '../../lib/session';
 
 export async function GET(req: NextRequest) {
   // déjà connecté ? pas de nouveau login
@@ -19,7 +19,9 @@ export async function GET(req: NextRequest) {
   const verifier = newCodeVerifier();
   const state = newState();
   const nonce = newState();
+  putFlow(state, verifier, nonce);
   const res = NextResponse.redirect(buildAuthorizeUrl(verifier, state, nonce));
-  res.cookies.set(TEMP_COOKIE, await encodeStash({ verifier, state, nonce }), stashCookieOptions());
+  // nettoyage d'un éventuel cookie de stash d'un déploiement antérieur
+  res.cookies.set(TEMP_COOKIE, '', { path: '/', maxAge: 0 });
   return res;
 }

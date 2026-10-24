@@ -29,8 +29,9 @@ curl -sf "http://localhost:4000/healthz" >/dev/null || fail "identity down"
 echo "✓ services identity + documents up"
 
 # 1) /login → 302 vers authorize avec PKCE + state + nonce
+# (remédiation revue : vérifier/nonce stockés SERVEUR par state —
+# plus aucune donnée de flux dans un cookie de transport)
 hdrs=$(curl -s -D - -o /dev/null "$WEB/login")
-stash=$(grep -i "^set-cookie:" <<<"$hdrs" | grabCookie alv_login)
 loc=$(grep -i "^location:" <<<"$hdrs" | sed 's/^[Ll]ocation:[[:space:]]*//' | tr -d '\r')
 echo "$loc" | grep -q "/realms/alveare/protocol/openid-connect/auth" || fail "authorize URL malformée : $loc"
 echo "$loc" | grep -q "client_id=web-admin" || fail "client_id absent"
@@ -38,8 +39,8 @@ echo "$loc" | grep -q "code_challenge_method=S256" || fail "PKCE S256 absent"
 echo "$loc" | grep -q "code_challenge=" || fail "code_challenge absent"
 echo "$loc" | grep -q "state=" || fail "state absent"
 echo "$loc" | grep -q "nonce=" || fail "nonce absent"
-[ -n "$stash" ] || fail "cookie stash (alv_login) non émis"
-echo "✓ /login → authorize (PKCE S256 + state + nonce) + stash chiffré"
+grep -i "^set-cookie:" <<<"$hdrs" | grep -q "alv_login=;" || fail "l'ancien cookie de stash devrait être effacé"
+echo "✓ /login → authorize (PKCE S256 + state + nonce) + flux stocké serveur"
 
 # 2) authentification : le formulaire Keycloak rempli en curl
 page=$(curl -s -b "$JAR_KC" -c "$JAR_KC" -L "$loc")
@@ -59,7 +60,8 @@ echo "$redir" | grep -q "state=" || fail "state absent du retour"
 echo "✓ login KC → callback avec code+state"
 
 # 3) le callback échange le code (PKCE), pose la session chiffrée
-cbHeaders=$(curl -s -D - -o /dev/null -H "Cookie: $stash" "$redir")
+# (le flux est trouvé par `state` côté serveur — aucun cookie requis)
+cbHeaders=$(curl -s -D - -o /dev/null "$redir")
 session=$(grep -i "^set-cookie:" <<<"$cbHeaders" | grabCookie alv_session)
 echo "$session" | grep -q "^alv_session=ey" || fail "session chiffrée non posée : ${session:0:40}"
 final=$(curl -s -H "Cookie: $session" "$WEB/")

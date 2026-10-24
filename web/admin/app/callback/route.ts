@@ -1,17 +1,23 @@
 /**
  * web-admin — GET /callback : réception du code d'autorisation.
- * Vérifie state (anti-CSRF), échange le code (PKCE), vérifie
- * l'id_token (iss, aud, nonce, RS256 via JWKS) puis pose la session
- * chiffrée. Toute anomalie → retour accueil sans session.
+ * Le flux est retrouvé par `state` dans le store serveur (single-use :
+ * l'entrée est consommée avant usage). Vérification de l'id_token
+ * (iss, aud, RS256 via JWKS, nonce comparé manuellement — jose n'a
+ * pas d'option nonce) puis pose de la session chiffrée.
+ * Toute anomalie → retour accueil sans session (console serveur seul).
  * Zone Red : revue indépendante obligatoire.
  */
 
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { NextRequest, NextResponse } from 'next/server';
-import { exchangeCode } from '../../lib/oidc';
-import { SESSION_COOKIE, decodeStash, encodeSession, sessionCookieOptions } from '../../lib/session';
-import { TEMP_COOKIE } from '../login/route';
-import { jwksUrl } from '../../lib/oidc';
+import { exchangeCode, jwksUrl, OIDC } from '../../lib/oidc';
+import {
+  SESSION_COOKIE,
+  TEMP_COOKIE,
+  encodeSession,
+  sessionCookieOptions,
+} from '../../lib/session';
+import { takeFlow } from '../../lib/flowStore';
 
 let remoteJwks: ReturnType<typeof createRemoteJWKSet> | undefined;
 function jwks() {
@@ -31,13 +37,13 @@ export async function GET(req: NextRequest) {
   const state = req.nextUrl.searchParams.get('state');
   if (!code || !state) return fail(req, 'code/state manquants');
 
-  const stash = await decodeStash(req.cookies.get(TEMP_COOKIE)?.value);
-  if (!stash) return fail(req, 'stash PKCE absent ou expiré');
-  if (state !== stash.state) return fail(req, 'state ≠ stash (CSRF probable)');
+  // single-use : consommé AVANT l'échange — pas de rejeu possible
+  const flow = takeFlow(state);
+  if (!flow) return fail(req, 'flux PKCE inconnu, expiré ou déjà consommé');
 
   let access: string, refresh: string | undefined, idToken: string, expiresIn: number;
   try {
-    const tokens = await exchangeCode(code, stash.verifier);
+    const tokens = await exchangeCode(code, flow.verifier);
     access = tokens.access_token;
     refresh = tokens.refresh_token;
     idToken = tokens.id_token ?? '';
@@ -48,14 +54,15 @@ export async function GET(req: NextRequest) {
   if (!idToken) return fail(req, 'id_token absent');
 
   try {
+    // issuer unifié avec OIDC.issuer (revue : divergence JWKS/issuer)
     const { payload } = await jwtVerify(idToken, jwks(), {
-      issuer: `${process.env.KEYCLOAK_BASE_URL ?? 'http://localhost:8081'}/realms/alveare`,
-      audience: 'web-admin',
+      issuer: OIDC.issuer,
+      audience: OIDC.clientId,
       algorithms: ['RS256'],
     });
     // le nonce n'est pas une option jose standard : comparaison manuelle
-    if (payload.nonce !== stash.nonce) {
-      return fail(req, 'nonce ≠ stash (rejeu probable)');
+    if (payload.nonce !== flow.nonce) {
+      return fail(req, 'nonce ≠ flux (rejeu probable)');
     }
   } catch (e) {
     return fail(req, `id_token invalide : ${String(e)}`);

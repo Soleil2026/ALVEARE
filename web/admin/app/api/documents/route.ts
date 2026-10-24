@@ -1,9 +1,13 @@
 /**
  * web-admin — proxy server-side vers le service documents (:4010).
  * Le navigateur ne connaît JAMAIS le access token : il frappe ce
- * proxy avec son cookie de session chiffré. Sur 401, tentative de
- * refresh transparente (refresh_token de la session) ; échec →
+ * proxy avec son cookie de session chiffré. Sur 401 POST, tentative
+ * de refresh transparente (refresh_token de la session) ; échec →
  * cookie détruit, le client se reconnecte.
+ * Remédiations revue : F-1 cap de taille AVANT bufferisation (la RAM
+ * du front n'absorbe jamais un corps non borné) ; F-6 erreurs
+ * upstream mappées en messages génériques, jamais re-passées telles
+ * quelles au client.
  * Zone Red : revue indépendante obligatoire.
  */
 
@@ -17,22 +21,61 @@ import {
 } from '../../../lib/session';
 
 const UPSTREAM = process.env.DOCUMENTS_URL ?? 'http://localhost:4010';
+/** cohérent avec la limite multer du service documents */
+const MAX_BODY = 25 * 1024 * 1024;
+
+/** libellé générique par statut — jamais le body upstream verbatim */
+function mappedError(status: number): string {
+  switch (status) {
+    case 400:
+      return 'fichier refusé (type ou taille non conformes)';
+    case 403:
+      return 'accès refusé';
+    case 404:
+      return 'document introuvable';
+    case 413:
+      return 'fichier trop volumineux';
+    default:
+      return 'documents : opération refusée';
+  }
+}
+
+async function guardedJson(res: Response): Promise<unknown | null> {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
 
 export async function GET(req: NextRequest) {
   const session = await decodeSession(req.cookies.get(SESSION_COOKIE)?.value);
   if (!session) return NextResponse.json({ error: 'session absente' }, { status: 401 });
+
   const res = await fetch(`${UPSTREAM}/documents`, {
     headers: { Authorization: `Bearer ${session.at}` },
-  });
+  }).catch(() => null);
+  if (!res) return NextResponse.json({ error: 'documents injoignable' }, { status: 502 });
   if (!res.ok) {
-    return NextResponse.json({ error: `documents : ${res.status}` }, { status: res.status });
+    return NextResponse.json({ error: mappedError(res.status) }, { status: res.status });
   }
-  return NextResponse.json(await res.json());
+  const data = await guardedJson(res);
+  if (!data) return NextResponse.json({ error: 'documents : réponse invalide' }, { status: 502 });
+  return NextResponse.json(data);
 }
 
 export async function POST(req: NextRequest) {
   const session = await decodeSession(req.cookies.get(SESSION_COOKIE)?.value);
   if (!session) return NextResponse.json({ error: 'session absente' }, { status: 401 });
+
+  // revue F-1 : cap de taille contrôlé AVANT tout buffering
+  const len = Number(req.headers.get('content-length') ?? 0);
+  if (len > MAX_BODY) {
+    return NextResponse.json(
+      { error: 'fichier trop volumineux (max 25 Mo)' },
+      { status: 413 },
+    );
+  }
 
   const form = await req.formData();
   const upstream = await fetch(`${UPSTREAM}/documents`, {
@@ -53,7 +96,11 @@ export async function POST(req: NextRequest) {
         body: form,
       });
       if (retry.ok) {
-        const rep = NextResponse.json(await retry.json(), { status: 201 });
+        const data = await guardedJson(retry);
+        if (!data) {
+          return NextResponse.json({ error: 'documents : réponse invalide' }, { status: 502 });
+        }
+        const rep = NextResponse.json(data, { status: 201 });
         rep.cookies.set(
           SESSION_COOKIE,
           await encodeSession({
@@ -77,6 +124,9 @@ export async function POST(req: NextRequest) {
     return dead;
   }
 
-  const rep = NextResponse.json(await upstream.json(), { status: upstream.status });
-  return rep;
+  const data = await guardedJson(upstream);
+  if (!data) {
+    return NextResponse.json({ error: mappedError(upstream.status) }, { status: upstream.status });
+  }
+  return NextResponse.json(data, { status: upstream.status });
 }

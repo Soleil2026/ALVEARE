@@ -19,7 +19,8 @@ export type SessionClaims = {
 };
 
 export const SESSION_COOKIE = 'alv_session';
-const TEMP_COOKIE = 'alv_login';
+/** Ancien cookie de transport du stash PKCE — garder le nom pour le nettoyage. */
+export const TEMP_COOKIE = 'alv_login';
 const SESSION_HOURS = 12;
 
 function sessionKey(): Uint8Array {
@@ -61,50 +62,16 @@ export async function decodeSession(jwe: string | undefined): Promise<SessionCla
   }
 }
 
-type PkceStash = { verifier: string; state: string; nonce: string };
-
-/** Encode/décrypte le stash PKCE temporaire (A256GCM, TTL 5 min). */
-export async function encodeStash(stash: PkceStash): Promise<string> {
-  return new EncryptJWT({ ...stash })
-    .setProtectedHeader({ alg: 'dir', enc: 'A256GCM' })
-    .setExpirationTime('5min')
-    .encrypt(sessionKey());
-}
-
-export async function decodeStash(jwe: string | undefined): Promise<PkceStash | null> {
-  if (!jwe) return null;
-  try {
-    const { payload } = await jwtDecrypt(jwe, sessionKey());
-    if (
-      typeof payload.verifier !== 'string' ||
-      typeof payload.state !== 'string' ||
-      typeof payload.nonce !== 'string'
-    ) {
-      return null;
-    }
-    return { verifier: payload.verifier, state: payload.state, nonce: payload.nonce };
-  } catch {
-    return null;
-  }
-}
-
 const baseCookie = {
   httpOnly: true,
   sameSite: 'lax' as const,
   path: '/',
-  // dev local : http ; le reverse-proxy prod posera Secure=true
-  secure: false,
+  // revue F-2 : plus de flag codé en dur — le reverse-proxy de prod
+  // pose COOKIE_SECURE=true ; dev local http://localhost → false
+  // (Safari refuse un cookie Secure sur du http simple).
+  secure: process.env.COOKIE_SECURE === 'true',
 };
 
 export function sessionCookieOptions(maxAgeSeconds: number) {
   return { ...baseCookie, maxAge: maxAgeSeconds };
-}
-
-export function stashCookieOptions() {
-  return { ...baseCookie, maxAge: 300 };
-}
-
-/** Fallback quand next/headers unavailable dans un helper sync. */
-export function clearCookie(res: NextResponse, name: string) {
-  res.cookies.set(name, '', { ...baseCookie, maxAge: 0 });
 }
