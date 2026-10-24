@@ -25,6 +25,7 @@ import {
   Injectable,
   Module,
   NotFoundException,
+  OnModuleDestroy,
   OnModuleInit,
   Param,
   Post,
@@ -40,9 +41,12 @@ import { APP_PATTERN, parseGrantBody } from './grants';
 type AuthRequest = Request & { user?: TokenUser };
 
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit {
+export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     await this.$connect();
+  }
+  async onModuleDestroy() {
+    await this.$disconnect();
   }
 }
 
@@ -151,21 +155,25 @@ class AdminController {
   ) {
     const admin = req.user as TokenUser;
     const body = parseGrantBody(raw);
-    await this.prisma.roleGrant.upsert({
-      where: { userId_app: { userId: body.userId, app: body.app } },
-      create: {
-        userId: body.userId,
-        app: body.app,
-        role: body.role,
-        createdBy: admin.sub,
-      },
-      update: { role: body.role, createdBy: admin.sub },
-    });
-    await this.audit.record({
-      actor: admin.sub,
-      action: 'role_grant.set',
-      target: `${body.userId}:${body.app}=${body.role}`,
-      details: { app: body.app, role: body.role },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.roleGrant.upsert({
+        where: { userId_app: { userId: body.userId, app: body.app } },
+        create: {
+          userId: body.userId,
+          app: body.app,
+          role: body.role,
+          createdBy: admin.sub,
+        },
+        update: { role: body.role, createdBy: admin.sub },
+      });
+      await tx.$queryRaw`
+        INSERT INTO audit.events (actor, action, target, details)
+        VALUES (
+          ${admin.sub},
+          'role_grant.set',
+          ${`${body.userId}:${body.app}=${body.role}`},
+          ${JSON.stringify({ app: body.app, role: body.role })}::jsonb
+        )`;
     });
     return { ok: true, granted: body };
   }
@@ -208,21 +216,24 @@ class ConsentsController {
     if (typeof b.scope !== 'string' || b.scope.length === 0) {
       throw new BadRequestException('scope manquant');
     }
-    const consent = await this.prisma.consent.upsert({
-      where: {
-        userId_consumingApp_scope: {
-          userId: user.sub,
-          consumingApp: b.consumingApp,
-          scope: b.scope,
+    const app: string = b.consumingApp;
+    const scope: string = b.scope;
+    const consent = await this.prisma.$transaction(async (tx) => {
+      const c = await tx.consent.upsert({
+        where: {
+          userId_consumingApp_scope: {
+            userId: user.sub,
+            consumingApp: app,
+            scope,
+          },
         },
-      },
-      create: { userId: user.sub, consumingApp: b.consumingApp, scope: b.scope },
-      update: { revokedAt: null },
-    });
-    await this.audit.record({
-      actor: user.sub,
-      action: 'consent.grant',
-      target: `${b.consumingApp}:${b.scope}`,
+        create: { userId: user.sub, consumingApp: app, scope },
+        update: { revokedAt: null },
+      });
+      await tx.$queryRaw`
+        INSERT INTO audit.events (actor, action, target)
+        VALUES (${user.sub}, 'consent.grant', ${`${app}:${scope}`})`;
+      return c;
     });
     return { ok: true, consentId: consent.id };
   }
@@ -239,14 +250,14 @@ class ConsentsController {
     });
     if (!existing) throw new NotFoundException('consentement inconnu');
     if (existing.revokedAt) return { ok: true, already: true };
-    await this.prisma.consent.update({
-      where: { id: existing.id },
-      data: { revokedAt: new Date() },
-    });
-    await this.audit.record({
-      actor: user.sub,
-      action: 'consent.revoke',
-      target: `${existing.consumingApp}:${existing.scope}`,
+    await this.prisma.$transaction(async (tx) => {
+      await tx.consent.update({
+        where: { id: existing.id },
+        data: { revokedAt: new Date() },
+      });
+      await tx.$queryRaw`
+        INSERT INTO audit.events (actor, action, target)
+        VALUES (${user.sub}, 'consent.revoke', ${`${existing.consumingApp}:${existing.scope}`})`;
     });
     return { ok: true };
   }

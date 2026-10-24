@@ -31,7 +31,13 @@ export type VerifyOptions = {
   jwks?: JWTVerifyGetKey;
 };
 
-/** Validation d'un access token Keycloak : signature, issuer, exp, azp. */
+/**
+ * Validation d'un access token Keycloak : signature, issuer, exp, azp.
+ * Alg épinglée RS256 (anti confusia-de-clé) ; un access token KC
+ * porte TOUJOURS un claim `scope` (un ID token ne l'a pas) — ce
+ * discriminateur rejouable comme access token est rejeté ici
+ * (condition de revue #1). aud strict arrive avec le mapper dédié.
+ */
 export async function verifyToken(
   token: string,
   opts: VerifyOptions = {},
@@ -39,20 +45,29 @@ export async function verifyToken(
   const jwks = opts.jwks ?? createRemoteJWKSet(new URL(JWKS_URL));
   let payload: JWTPayload;
   try {
-    ({ payload } = await jwtVerify(token, jwks, { issuer: ISSUER }));
+    ({ payload } = await jwtVerify(token, jwks, {
+      issuer: ISSUER,
+      algorithms: ['RS256'],
+    }));
   } catch {
     throw new UnauthorizedException('token invalide');
+  }
+  if (typeof payload.scope !== 'string' || payload.scope.length === 0) {
+    throw new UnauthorizedException('access token requis');
   }
   const azp = typeof payload.azp === 'string' ? payload.azp : undefined;
   if (!azp || !ALLOWED_AZP.has(azp)) {
     throw new UnauthorizedException('client non autorisé');
+  }
+  if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
+    throw new UnauthorizedException('sujet manquant');
   }
   const realm = payload.realm_access as { roles?: unknown } | undefined;
   const realmRoles = Array.isArray(realm?.roles)
     ? realm.roles.filter((r): r is string => typeof r === 'string')
     : [];
   return {
-    sub: String(payload.sub),
+    sub: payload.sub,
     email: typeof payload.email === 'string' ? payload.email : undefined,
     realmRoles,
   };

@@ -8,7 +8,7 @@ import { BadRequestException } from '@nestjs/common';
 import { UserRoleSchema } from '@alveare/contracts';
 
 /** pattern des apps branchées : core-admin | app-01..app-12 */
-export const APP_PATTERN = /^(core-admin|app-\d{2})$/;
+export const APP_PATTERN = /^(core-admin|app-(0[1-9]|1[0-2]))$/;
 
 export type GrantBody = {
   userId: string;

@@ -21,7 +21,7 @@ beforeAll(async () => {
 });
 
 async function sign(claims: Record<string, unknown>, opts: { exp?: string } = {}) {
-  return new SignJWT(claims)
+  return new SignJWT({ scope: 'openid e2e', ...claims })
     .setProtectedHeader({ alg: 'RS256', kid: 'test-1' })
     .setIssuedAt()
     .setIssuer(ISSUER)
@@ -77,6 +77,39 @@ describe('verifyToken', () => {
       .sign(otherKey as Parameters<typeof SignJWT>[1]);
     await expect(verifyToken(token, { jwks: localJwks })).rejects.toThrow(UnauthorizedException);
   });
+
+  it('rejette un token sans claim scope (un ID token par ex.)', async () => {
+    const token = await new SignJWT({ ...base })
+      .setProtectedHeader({ alg: 'RS256', kid: 'test-1' })
+      .setIssuedAt()
+      .setIssuer(ISSUER)
+      .setSubject('sub-user-1')
+      .setExpirationTime('5m')
+      .sign(signKey);
+    await expect(verifyToken(token, { jwks: localJwks })).rejects.toThrow('access token requis');
+  });
+
+  it('rejette un token sans sub', async () => {
+    const token = await new SignJWT({ ...base, scope: 'openid' })
+      .setProtectedHeader({ alg: 'RS256', kid: 'test-1' })
+      .setIssuedAt()
+      .setIssuer(ISSUER)
+      .setSubject('')
+      .setExpirationTime('5m')
+      .sign(signKey);
+    await expect(verifyToken(token, { jwks: localJwks })).rejects.toThrow('sujet manquant');
+  });
+
+  it('rejette une alg différente de RS256 (HS256 signé puis vérifié contre le JWKS RSA)', async () => {
+    const token = await new SignJWT({ ...base, scope: 'openid' })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuer(ISSUER)
+      .setSubject('sub-user-1')
+      .setExpirationTime('5m')
+      .setIssuedAt()
+      .sign(new TextEncoder().encode('secret-hmac-inconnu'));
+    await expect(verifyToken(token, { jwks: localJwks })).rejects.toThrow(UnauthorizedException);
+  });
 });
 
 describe('isAdminEffective', () => {
@@ -113,6 +146,12 @@ describe('parseGrantBody', () => {
 
   it('rejette une app hors pattern', () => {
     expect(() => parseGrantBody({ userId: 'x', app: 'app-999', role: 'admin' })).toThrow(BadRequestException);
+    expect(() => parseGrantBody({ userId: 'x', app: 'app-00', role: 'admin' })).toThrow(BadRequestException);
+    expect(() => parseGrantBody({ userId: 'x', app: 'app-13', role: 'admin' })).toThrow(BadRequestException);
+  });
+
+  it('accepte app-01..app-12 aux bornes', () => {
+    expect(parseGrantBody({ userId: 'x', app: 'app-12', role: 'utilisateur' }).app).toBe('app-12');
   });
 
   it('rejette un rôle inconnu', () => {
