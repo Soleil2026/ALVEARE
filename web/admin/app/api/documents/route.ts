@@ -106,7 +106,6 @@ export async function POST(req: NextRequest) {
           await encodeSession({
             at: fresh.access_token,
             rt: fresh.refresh_token ?? session.rt,
-            idToken: session.idToken ?? '',
             exp,
           }),
           sessionCookieOptions(fresh.expires_in ?? 300),

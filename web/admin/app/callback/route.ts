@@ -13,6 +13,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { exchangeCode, jwksUrl, OIDC } from '../../lib/oidc';
 import {
   SESSION_COOKIE,
+  SESSION_HOURS,
   TEMP_COOKIE,
   encodeSession,
   sessionCookieOptions,
@@ -72,9 +73,12 @@ export async function GET(req: NextRequest) {
   const res = NextResponse.redirect(new URL('/', req.url));
   res.cookies.set(
     SESSION_COOKIE,
-    await encodeSession({ at: access, rt: refresh, idToken, exp }),
-    sessionCookieOptions(expiresIn),
+    await encodeSession({ at: access, rt: refresh, exp }),
+    // revue F-3 : la durée du COOKIE suit le plafond 12 h (le JWE
+    // garde son exp propre — la page affiche la reconnexion à échéance)
+    sessionCookieOptions(SESSION_HOURS * 3600),
   );
+  console.log('callback : session posée (flux OIDC complet)');
   res.cookies.set(TEMP_COOKIE, '', { path: '/', maxAge: 0 });
   return res;
 }

@@ -21,7 +21,8 @@ export type SessionClaims = {
 export const SESSION_COOKIE = 'alv_session';
 /** Ancien cookie de transport du stash PKCE — garder le nom pour le nettoyage. */
 export const TEMP_COOKIE = 'alv_login';
-const SESSION_HOURS = 12;
+/** Plafond de vie d'une session (revue F-3 : maxAge cookie aligné). */
+export const SESSION_HOURS = 12;
 
 function sessionKey(): Uint8Array {
   const hex = process.env.SESSION_KEY ?? '';
