@@ -45,8 +45,8 @@ import * as path from 'node:path';
 import * as QRCode from 'qrcode';
 import type { Express, Request, Response } from 'express';
 import { requireToken, type TokenUser } from '@alveare/auth';
-import { isSafeStoredPath, sanitizeFileName, validateUpload } from './files';
 import { clampTtl, createShareToken, verifyShareToken } from './shares';
+import { isSafeStoredPath, MAX_UPLOAD_MB, sanitizeFileName, validateUpload } from './files';
 
 type AuthRequest = Request & { user?: TokenUser };
 
@@ -98,10 +98,16 @@ function docIdOf(rawId: string): bigint {
 class DocsController {
   constructor(private prisma: PrismaService) {}
 
-  /** Upload (FR-04.1) : validation + sha256 + disque + BD + audit. */
+  /** Upload (FR-04.1) : validation + sha256 + disque + BD + audit.
+   * Limite multer AVANT buffering (revue C1) : deux barrières —
+   * multer abort au-delà, validateUpload re-vérifie ensuite. */
   @Post('documents')
   @UseGuards(AuthGuard)
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
+    }),
+  )
   async upload(
     @Req() req: AuthRequest,
     @UploadedFile() file?: Express.Multer.File,
@@ -109,27 +115,28 @@ class DocsController {
     const user = req.user as TokenUser;
     if (!file || !file.originalname) throw new BadRequestException('champ "file" manquant');
     const buf = file.buffer;
-    validateUpload(file.mimetype, file.size, buf);
+    validateUpload(file.mimetype, file.size, buf, file.originalname);
 
     const sha256 = createHash('sha256').update(buf).digest('hex');
     const safeName = sanitizeFileName(file.originalname);
     const storedPath = `${randomUUID()}-${safeName}`;
-    writeFileSync(path.join(DATA_DIR, storedPath), buf);
+    writeFileSync(path.join(DATA_DIR, storedPath), buf, { mode: 0o600 });
 
     try {
-      const doc = await this.prisma.document.create({
-        data: {
-          ownerSub: user.sub,
-          fileName: safeName,
-          mimeType: file.mimetype,
-          sizeBytes: file.size,
-          sha256,
-          storedPath,
-        },
+      const doc = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.document.create({
+          data: {
+            ownerSub: user.sub,
+            fileName: safeName,
+            mimeType: file.mimetype,
+            sizeBytes: file.size,
+            sha256,
+            storedPath,
+          },
+        });
+        await audit(tx, user.sub, 'document.upload', `${created.id}:${safeName}`);
+        return created;
       });
-      await this.prisma.$transaction((tx) =>
-        audit(tx, user.sub, 'document.upload', `${doc.id}:${safeName}`),
-      );
       return {
         id: doc.id.toString(),
         fileName: doc.fileName,
@@ -139,8 +146,10 @@ class DocsController {
         createdAt: doc.createdAt,
       };
     } catch (err) {
-      // pas de fichier orphelin si la BD refuse
-      unlink(path.join(DATA_DIR, storedPath), () => {});
+      // pas de fichier orphelin si la BD refuse (échec logué)
+      unlink(path.join(DATA_DIR, storedPath), (e) => {
+        if (e) console.error(`unlink orphelin impossible : ${String(e)}`);
+      });
       throw err;
     }
   }
@@ -218,11 +227,15 @@ class DocsController {
     const user = req.user as TokenUser;
     const row = await this.prisma.shareToken.findUnique({ where: { jti } });
     if (!row || row.createdBy !== user.sub) throw new NotFoundException('partage inconnu');
-    if (!row.revokedAt) {
-      await this.prisma.$transaction(async (tx) => {
-        await tx.shareToken.update({ where: { jti }, data: { revokedAt: new Date() } });
-        await audit(tx, user.sub, 'share.revoke', `${row.documentId}:${jti}`);
-      });
+    // révocation atomique ( anti TOCTOU, revue #8 )
+    const revoked = await this.prisma.shareToken.updateMany({
+      where: { jti, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    if (revoked.count === 1) {
+      await this.prisma.$transaction((tx) =>
+        audit(tx, user.sub, 'share.revoke', `${row.documentId}:${jti}`),
+      );
     }
     return { ok: true };
   }
@@ -248,13 +261,18 @@ class DocsController {
     if (!isSafeStoredPath(doc.storedPath, DATA_DIR)) {
       throw new ForbiddenException('chemin stocké suspect');
     }
-    // audit du téléchargement (non bloquant)
-    void this.prisma
-      .$transaction((tx) => audit(tx, share.sub, 'document.download', `${doc.id}:${share.jti}`))
-      .catch(() => undefined);
+    // audit du téléchargement BLOQUANT (revue C3) : pas de download
+    // sans trace — si l'insert échoue, la requête échoue (500).
+    await this.prisma
+      .$transaction((tx) => audit(tx, share.sub, 'document.download', `${doc.id}:${share.jti}`));
     res.setHeader('Content-Type', doc.mimeType);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Content-Safe-Checksum', doc.sha256);
-    res.setHeader('Content-Disposition', `attachment; filename="${doc.fileName}"`);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${sanitizeFileName(doc.fileName)}"`,
+    );
     res.sendFile(path.resolve(DATA_DIR, doc.storedPath));
   }
 

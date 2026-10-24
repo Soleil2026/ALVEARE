@@ -7,9 +7,7 @@
  * Révocation : lignes ShareToken BD (jti) — vérif à chaque accès.
  */
 
-import {
-  UnauthorizedException,
-} from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { SignJWT, jwtVerify } from 'jose';
 import { randomUUID } from 'node:crypto';
 
@@ -31,8 +29,10 @@ function secretKey(): Uint8Array {
 
 /** Durée de vie d'un partage : 1 minute à 24 h, 15 min par défaut. */
 export function clampTtl(ttlSeconds?: unknown): number {
-  const n = Number(ttlSeconds ?? 900);
-  if (!Number.isInteger(n)) throw new UnauthorizedException('ttl invalide');
+  const n = typeof ttlSeconds === 'number' ? ttlSeconds : Number(ttlSeconds ?? 900);
+  if (!Number.isInteger(n)) {
+    throw new BadRequestException('ttl invalide (entier attendu)');
+  }
   return Math.min(Math.max(n, 60), 86400);
 }
 

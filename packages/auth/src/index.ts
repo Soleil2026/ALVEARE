@@ -19,6 +19,14 @@ import type { Request } from 'express';
 export const ISSUER = process.env.KEYCLOAK_ISSUER ?? 'http://localhost:8081/realms/alveare';
 export const JWKS_URL = `${ISSUER}/protocol/openid-connect/certs`;
 
+/** JWKS remote UNIQUE (singleton) : laisse jose gérer son cache
+ * et son rafraîchissement de clés (revue E2 #10). */
+let sharedRemoteJwks: JWTVerifyGetKey | undefined;
+function defaultJwks(): JWTVerifyGetKey {
+  sharedRemoteJwks ??= createRemoteJWKSet(new URL(JWKS_URL));
+  return sharedRemoteJwks;
+}
+
 /** clients autorisés à émettre des tokens acceptés par ce service */
 export const ALLOWED_AZP: ReadonlySet<string> = new Set(['web-admin', 'identity-api']);
 
@@ -44,7 +52,7 @@ export async function verifyToken(
   token: string,
   opts: VerifyOptions = {},
 ): Promise<TokenUser> {
-  const jwks = opts.jwks ?? createRemoteJWKSet(new URL(JWKS_URL));
+  const jwks = opts.jwks ?? defaultJwks();
   let payload: JWTPayload;
   try {
     ({ payload } = await jwtVerify(token, jwks, {

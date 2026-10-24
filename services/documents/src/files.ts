@@ -10,8 +10,15 @@ import * as path from 'node:path';
 
 export const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB ?? '10');
 
+/** fail-fast : une limite de taille invalide = service dangereusement muet */
+if (!Number.isFinite(MAX_UPLOAD_MB) || MAX_UPLOAD_MB <= 0) {
+  throw new Error(`MAX_UPLOAD_MB invalide : ${String(process.env.MAX_UPLOAD_MB)}`);
+}
+
 /** mime → signature binaire attendue (HEAD du fichier) */
-const MAGICS: Array<{ mime: string; exts: string[]; head: (b: Buffer) => boolean }> = [
+const MAGICS: Array<{
+  mime: string; exts: string[]; head: (b: Buffer) => boolean;
+}> = [
   { mime: 'application/pdf', exts: ['.pdf'], head: (b) => b.subarray(0, 5).toString('latin1') === '%PDF-' },
   { mime: 'image/png', exts: ['.png'], head: (b) => b.subarray(0, 4).toString('hex') === '89504e47' },
   { mime: 'image/jpeg', exts: ['.jpeg', '.jpg'], head: (b) => b.subarray(0, 2).toString('hex') === 'ffd8ff' },
@@ -41,19 +48,31 @@ function extOf(name: string): string {
   return i <= 0 ? '' : name.slice(i).toLowerCase();
 }
 
-/** Valide mime déclaré + taille + magic bytes. Throws BadRequest. */
-export function validateUpload(mimeType: string, sizeBytes: number, buf: Buffer): void {
+/** Valide mime déclaré + taille + magic bytes (+ ext si fournie). */
+export function validateUpload(
+  mimeType: string,
+  sizeBytes: number,
+  buf: Buffer,
+  fileName?: string,
+): void {
   if (sizeBytes <= 0) throw new BadRequestException('fichier vide');
   const max = MAX_UPLOAD_MB * 1024 * 1024;
   if (sizeBytes > max) {
     throw new BadRequestException(`fichier trop gros (max ${MAX_UPLOAD_MB} Mo)`);
   }
-  const head = (b: Buffer) => {
-    void b;
-  };
-  const allowed = allowedMimes().includes(mimeType);
-  if (!allowed) {
+  if (!allowedMimes().includes(mimeType)) {
     throw new BadRequestException('type de fichier non autorisé');
+  }
+  if (fileName) {
+    const ext = extOf(fileName.toLowerCase());
+    const rule = MAGICS.find((m) => m.mime === mimeType);
+    const ok =
+      mimeType === CSV.mime
+        ? CSV.exts.includes(ext)
+        : !!rule && rule.exts.includes(ext);
+    if (!ok) {
+      throw new BadRequestException('extension incompatible au type déclaré');
+    }
   }
   if (mimeType === CSV.mime) {
     if (buf.includes(0)) throw new BadRequestException('csv binaire non valide');
