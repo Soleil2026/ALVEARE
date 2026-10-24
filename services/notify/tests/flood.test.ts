@@ -34,4 +34,12 @@ describe('floodScore', () => {
     for (let i = 0; i < MAX_PER_WINDOW; i++) floodScore('hash-d', NOW + i * 1000);
     expect(floodScore('hash-d', NOW + WINDOW_MS - 2_000).ok).toBe(false);
   });
+
+  it('plafond émetteur custom (max param, revue N5-3)', () => {
+    expect(floodScore('usr:u1', NOW, 2).ok).toBe(true);
+    expect(floodScore('usr:u1', NOW + 1000, 2).ok).toBe(true);
+    expect(floodScore('usr:u1', NOW + 2000, 2).ok).toBe(false);
+    // un autre émetteur n'est PAS affecté
+    expect(floodScore('usr:u2', NOW, 2).ok).toBe(true);
+  });
 });

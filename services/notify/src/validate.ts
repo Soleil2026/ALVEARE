@@ -7,6 +7,9 @@
 export const CHANNELS = ['email', 'sms'] as const;
 export const TEMPLATES = ['verify-email', 'password-reset', 'document-shared', 'test'] as const;
 export const LANGS = ['fr', 'ar', 'en'] as const;
+/** Revue N5-4 : `via` est une liste fermée d'apps émettrices connues
+ * (pas un champ libre) — évite l'usurpation d'émetteur à l'audit. */
+export const VIA_APPS = ['identity', 'documents', 'notify', 'web-admin', 'e2e'] as const;
 
 export type Channel = (typeof CHANNELS)[number];
 export type Template = (typeof TEMPLATES)[number];
@@ -67,6 +70,9 @@ export function parseSendInput(body: unknown): Result {
   if (typeof via !== 'string' || via.length < 1 || via.length > 60) {
     return { ok: false, status: 400, error: 'via manquant (app émettrice)' };
   }
+  if (!VIA_APPS.includes(via as (typeof VIA_APPS)[number])) {
+    return { ok: false, status: 400, error: 'via non autorisé (app émettrice inconnue)' };
+  }
 
   let params: Record<string, string> | undefined;
   if (b.params !== undefined) {
@@ -85,6 +91,10 @@ export function parseSendInput(body: unknown): Result {
       }
       if (typeof v !== 'string' || v.length > 200) {
         return { ok: false, status: 400, error: 'params : valeurs chaîne ≤ 200 car' };
+      }
+      // Revue N5-5 : pas de CRLF dans les params (headers SMTP, Sujets mail).
+      if (k.match(/[\r\n\t]/) !== null || v.match(/[\r\n\t]/) !== null) {
+        return { ok: false, status: 400, error: 'params : caractères de contrôle interdits' };
       }
       params[k] = v;
     }

@@ -37,10 +37,10 @@ import {
 import { PrismaClient, Prisma } from '@prisma/client';
 import * as path from 'node:path';
 import type { Request } from 'express';
-import { requireToken, type TokenUser } from '@alveare/auth';
+import { isAdminEffective, requireToken, type TokenUser } from '@alveare/auth';
 import { hashRecipient, sealRecipient } from './pii';
 import { parseSendInput, type Lang, type Template } from './validate';
-import { floodScore } from './flood';
+import { MAX_EMITTER_PER_WINDOW, floodScore } from './flood';
 import { loadTemplates, render, type Rendered, type TemplatesMap } from './render';
 import { makeEmailAdapter, type EmailAdapter, type MailResult } from './email';
 import { makeSmsProvider, type SmsProvider } from './sms';
@@ -104,11 +104,36 @@ class NotifyController {
     }
     const input = parsed.input;
 
+    // Revue N5-3 : le template `test` ne sert qu'aux administrateurs —
+    // sinon tout compte authentifié pourrait générer du trafic arbitraire.
+    if (input.template === 'test' && !isAdminEffective(user)) {
+      throw new HttpException('template test réservé aux administrateurs', 403);
+    }
+
+    // Revue N5-2 : PRE-CHECK dedup AVANT toute consommation de fente
+    // anti-flood — un replay purement idempotent ne doit rien coûter.
+    if (input.dedupKey !== undefined) {
+      const prior = await this.prisma.notification.findFirst({
+        where: { via: input.via, dedupKey: input.dedupKey },
+        select: { id: true, status: true },
+      });
+      if (prior) {
+        return { id: prior.id.toString(), status: prior.status, deduped: true };
+      }
+    }
+
     let rendered: Rendered;
     try {
       rendered = render(RT.templates, input.template, input.lang, input.params);
     } catch {
       throw new HttpException('params insuffisants pour ce template', 400);
+    }
+
+    // Revue N5-3 : plafond PAR ÉMETTEUR (compte authentifié) en plus du
+    // plafond destinataire — limite la capacité d'inonder.
+    const emitter = floodScore(`usr:${user.sub}`, Date.now(), MAX_EMITTER_PER_WINDOW);
+    if (!emitter.ok) {
+      throw new HttpException('trop de messages de cet émetteur (cap 20/minute)', 429);
     }
 
     const recipientHash = hashRecipient(input.to);
@@ -166,7 +191,7 @@ class NotifyController {
         err.code === 'P2002'
       ) {
         const prior = await this.prisma.notification.findFirst({
-          where: { dedupKey: input.dedupKey },
+          where: { via: input.via, dedupKey: input.dedupKey },
           select: { id: true, status: true, createdAt: true },
         });
         if (prior) {
@@ -216,6 +241,8 @@ class HealthController {
         'pii-sealed-recipients',
         'api-send-idempotent',
         'anti-flood',
+        'emitter-cap',
+        'dedup-scoped-via',
         'templates-i18n-strict',
         'email-smtp-or-dev',
         'sms-provider-dev',

@@ -56,10 +56,22 @@ describe('parseSendInput', () => {
     expect(parseSendInput({ ...base, via: 'x'.repeat(61) }).ok).toBe(false);
   });
 
+  it('via non autorisé (app inconnue) → 400 (revue N5-4)', () => {
+    expect(parseSendInput({ ...base, via: 'app-pirate' }).ok).toBe(false);
+    expect(parseSendInput({ ...base, via: 'identity' }).ok).toBe(true);
+    expect(parseSendInput({ ...base, via: 'e2e' }).ok).toBe(true);
+  });
+
   it('params non chaînes ou trop de clés → 400', () => {
     expect(parseSendInput({ ...base, params: { code: 3 } }).ok).toBe(false);
     const many = Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`k${i}`, 'v']));
     expect(parseSendInput({ ...base, params: many }).ok).toBe(false);
+  });
+
+  it('CRLF / tab dans les params → 400 (revue N5-5, injection headers)', () => {
+    expect(parseSendInput({ ...base, params: { code: 'a\nb' } }).ok).toBe(false);
+    expect(parseSendInput({ ...base, params: { code: 'a\rb' } }).ok).toBe(false);
+    expect(parseSendInput({ ...base, params: { 'co\nde': 'a' } }).ok).toBe(false);
   });
 
   it('dedupKey hors bornes → 400', () => {
