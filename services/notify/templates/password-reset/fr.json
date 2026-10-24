@@ -1,0 +1,4 @@
+{
+  "subject": "ALVEARE — Réinitialise ton mot de passe",
+  "text": "Bonjour,\n\nTu as demandé une réinitialisation :\n{{link}}\n\nCe lien expire dans {{ttl}}. Si tu n'as rien demandé, ignore ce message.\n\n— ALVEARE"
+}

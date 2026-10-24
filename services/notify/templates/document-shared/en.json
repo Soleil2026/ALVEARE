@@ -1,0 +1,4 @@
+{
+  "subject": "ALVEARE — A document was shared with you",
+  "text": "Hello,\n\nThe document \"{{docName}}\" was shared with you.\nAccess: {{link}}\n\nThis link expires in {{ttl}}.\n\n— ALVEARE"
+}

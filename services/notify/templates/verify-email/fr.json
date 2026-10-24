@@ -1,0 +1,4 @@
+{
+  "subject": "ALVEARE — Vérifie ton adresse email",
+  "text": "Bonjour,\n\nTon code de vérification : {{code}}\nLien : {{link}}\n\nCe code expire dans {{ttl}}.\n\n— ALVEARE"
+}
