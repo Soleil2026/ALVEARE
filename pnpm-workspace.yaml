@@ -1,0 +1,8 @@
+packages:
+  - packages/*
+  - services/*
+  - web/*
+
+# scripts de post-installation autorisés (esbuild est requis par tsx)
+onlyBuiltDependencies:
+  - esbuild

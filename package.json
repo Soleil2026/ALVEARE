@@ -1,0 +1,9 @@
+{
+  "name": "alveare",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "dev:identity": "pnpm --filter @alveare/identity dev",
+    "dev:web": "pnpm --filter @alveare/web-admin dev"
+  }
+}
