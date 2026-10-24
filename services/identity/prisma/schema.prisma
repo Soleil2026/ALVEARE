@@ -1,0 +1,51 @@
+// Prisma — BD du socle ALVEARE Core (V1).
+// Schéma 'identity' : rôles par application + consentements de partage.
+// L'audit est dans le schéma 'audit' (SQL brut, voir infra/postgres-init.sh)
+// et est accédé via $queryRaw — décision assumée (plan E2 T2.6).
+
+generator client {
+  provider = "prisma-client-js"
+  schemas  = ["identity"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["identity"]
+}
+
+/// Attribution d'un rôle DANS une application B2B (doc B §2.4) :
+/// un compte global ne donne aucun accès automatique — chaque app
+/// accorde (ou révoque) le rôle de l'utilisateur chez elle.
+model RoleGrant {
+  id        Int      @id @default(autoincrement())
+  userId    String   // subject (sub) Keycloak
+  /// app branchée : "core-admin", "app-01".."app-12"
+  app       String
+  /// UserRoleSchema : "admin" | "gestionnaire" | "utilisateur"
+  role      String
+  createdAt DateTime @default(now())
+  createdBy String
+
+  @@unique([userId, app])
+  @@index([app, role])
+  @@schema("identity")
+}
+
+/// Registre des consentements de partage (FR-02.5, B §4.3) :
+/// l'utilisateur autorise une app consommatrice sur un périmètre,
+/// révocable à tout moment, tracé.
+model Consent {
+  id            Int       @id @default(autoincrement())
+  userId        String
+  /// app consommatrice
+  consumingApp  String
+  /// périmètre consent (ex. "documents:read", "identity:profile")
+  scope         String
+  grantedAt     DateTime  @default(now())
+  revokedAt     DateTime?
+
+  @@unique([userId, consumingApp, scope])
+  @@index([userId, revokedAt])
+  @@schema("identity")
+}
