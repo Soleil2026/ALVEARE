@@ -1,0 +1,54 @@
+{
+  "realm": "alveare",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "roles": {
+    "realm": [
+      { "name": "admin", "description": "Admin du socle (MFA obligatoire)" },
+      { "name": "gestionnaire" },
+      { "name": "utilisateur" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "web-admin",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://localhost:3001/*"],
+      "webOrigins": ["http://localhost:3001"],
+      "attributes": { "pkce.code.challenge.method": "S256" }
+    },
+    {
+      "clientId": "identity-api",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "bearerOnly": true,
+      "directAccessGrantsEnabled": false
+    }
+  ],
+  "users": [
+    {
+      "username": "admin@dev.local",
+      "email": "admin@dev.local",
+      "firstName": "Admin",
+      "lastName": "Dev",
+      "enabled": true,
+      "emailVerified": true,
+      "requiredActions": ["CONFIGURE_TOTP"],
+      "realmRoles": ["admin"]
+    },
+    {
+      "username": "user@dev.local",
+      "email": "user@dev.local",
+      "firstName": "User",
+      "lastName": "Dev",
+      "enabled": true,
+      "emailVerified": true,
+      "realmRoles": []
+    }
+  ]
+}

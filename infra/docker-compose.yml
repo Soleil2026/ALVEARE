@@ -4,11 +4,15 @@
 services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.3
-    command: start-dev
+    command: start-dev --import-realm
     environment:
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: admin-dev      # jetable, dev local uniquement
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:?infra/.env requis}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:?infra/.env requis}
       KC_HEALTH_ENABLED: "true"
+      ALV_ADMIN_PASS: ${ALV_ADMIN_PASS}
+      ALV_USER_PASS: ${ALV_USER_PASS}
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
     ports:
       - "8081:8080"   # console admin http://localhost:8081 (8080 est occupé sur cette machine par un tunnel SSH vers un autre projet)
   redis:
