@@ -109,6 +109,28 @@ importers:
 
   .: {}
 
+  packages/auth:
+    dependencies:
+      '@nestjs/common':
+        specifier: ^11.0.0
+        version: 11.2.7(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      jose:
+        specifier: ^6.1.0
+        version: 6.2.13
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.0
+        version: 5.0.6
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jiti@2.7.0)
+
   packages/contracts:
     dependencies:
       zod:
@@ -127,6 +149,9 @@ importers:
 
   services/identity:
     dependencies:
+      '@alveare/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@alveare/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -142,9 +167,6 @@ importers:
       '@prisma/client':
         specifier: ^6.16.0
         version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
-      jose:
-        specifier: ^6.1.0
-        version: 6.2.13
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2

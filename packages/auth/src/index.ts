@@ -1,5 +1,7 @@
 /**
- * ALVEARE Identity — validation des tokens OIDC Keycloak.
+ * @alveare/auth — validation des tokens OIDC Keycloak.
+ * Paquet mutualisé : unique source de vérité du vérificateur JWT,
+ * consommé par services/identity ET services/documents.
  * Zone Red : revue indépendante obligatoire (AGENTS.md / revue-criticite).
  */
 

@@ -35,7 +35,7 @@ import {
 } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import type { Request } from 'express';
-import { isAdminEffective, requireToken, type TokenUser } from './token';
+import { isAdminEffective, requireToken, type TokenUser } from '@alveare/auth';
 import { APP_PATTERN, parseGrantBody } from './grants';
 
 type AuthRequest = Request & { user?: TokenUser };

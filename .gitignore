@@ -1,6 +1,9 @@
 # dépendances
 node_modules/
 
+# fichiers des utilisateurs (E4) — jamais dans git
+data/
+
 # secrets — JAMAIS dans git (règle B l.659)
 .env
 .env.*

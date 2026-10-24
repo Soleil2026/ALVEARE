@@ -1,17 +1,19 @@
 // Prisma — BD du socle ALVEARE Core (V1).
-// Schéma 'identity' : rôles par application + consentements de partage.
-// L'audit est dans le schéma 'audit' (SQL brut, voir infra/postgres-init.sh)
-// et est accédé via $queryRaw — décision assumée (plan E2 T2.6).
+// - Schéma 'identity' : rôles par application + consentements de partage.
+//   L'audit est dans le schéma 'audit' (SQL brut, voir
+//   infra/postgres-init.sh) et est accédé via $queryRaw — décision
+//   assumée (plan E2 T2.6).
+// - Schéma 'documents' (E4) : fichiers + jetons de partage signés.
 
 generator client {
   provider = "prisma-client-js"
-  schemas  = ["identity"]
+  schemas  = ["identity", "documents"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  schemas  = ["identity"]
+  schemas  = ["identity", "documents"]
 }
 
 /// Attribution d'un rôle DANS une application B2B (doc B §2.4) :
@@ -48,4 +50,41 @@ model Consent {
   @@unique([userId, consumingApp, scope])
   @@index([userId, revokedAt])
   @@schema("identity")
+}
+
+/// Fichier document d'un utilisateur (FR-04.x) — V1 = 1 version.
+/// Contenu binaire sur disque local (DATA_DIR), jamais en git.
+model Document {
+  id        BigInt   @id @default(autoincrement())
+  /// propriétaire = subject Keycloak (B §2.4)
+  ownerSub  String
+  /// nom d'origine nettoyé (sans arborescence)
+  fileName  String
+  mimeType  String
+  sizeBytes Int
+  sha256    String
+  /// chemin relatif sous DATA_DIR
+  storedPath String
+  createdAt DateTime @default(now())
+  shares    ShareToken[]
+
+  @@index([ownerSub, createdAt])
+  @@schema("documents")
+}
+
+/// Jetons d'URL temporaire signée (B §4.6) — révocables à la demande.
+/// Le secret HMAC reste dans .env (jamais en BD ni en code).
+model ShareToken {
+  id        BigInt    @id @default(autoincrement())
+  /// id unique du token (jti JWT)
+  jti       String    @unique
+  document  Document  @relation(fields: [documentId], references: [id])
+  documentId BigInt
+  createdBy String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([documentId, revokedAt])
+  @@schema("documents")
 }

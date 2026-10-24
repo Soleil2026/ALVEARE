@@ -1,13 +1,12 @@
 /*
- * Tests du noyau de sécurité du service identity (zone Red).
+ * Tests du paquet @alveare/auth (zone Red).
  * Simule un Keycloak local : RSA + JWKS en mémoire via jose.
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from 'jose';
-import { UnauthorizedException, BadRequestException } from '@nestjs/common';
-import { isAdminEffective, verifyToken, ISSUER, type TokenUser } from '../src/token';
-import { parseGrantBody } from '../src/grants';
+import { UnauthorizedException } from '@nestjs/common';
+import { isAdminEffective, verifyToken, ISSUER, type TokenUser } from '../src';
 
 let signKey: Uint8Array | KeyLike;
 type KeyLike = Parameters<typeof SignJWT>[1];
@@ -134,31 +133,3 @@ describe('isAdminEffective', () => {
   });
 });
 
-describe('parseGrantBody', () => {
-  it('accepte un corps conforme', () => {
-    const g = parseGrantBody({ userId: 'sub-1', app: 'app-07', role: 'gestionnaire' });
-    expect(g).toEqual({ userId: 'sub-1', app: 'app-07', role: 'gestionnaire' });
-  });
-
-  it('accepte core-admin comme app', () => {
-    expect(parseGrantBody({ userId: 'x', app: 'core-admin', role: 'admin' }).app).toBe('core-admin');
-  });
-
-  it('rejette une app hors pattern', () => {
-    expect(() => parseGrantBody({ userId: 'x', app: 'app-999', role: 'admin' })).toThrow(BadRequestException);
-    expect(() => parseGrantBody({ userId: 'x', app: 'app-00', role: 'admin' })).toThrow(BadRequestException);
-    expect(() => parseGrantBody({ userId: 'x', app: 'app-13', role: 'admin' })).toThrow(BadRequestException);
-  });
-
-  it('accepte app-01..app-12 aux bornes', () => {
-    expect(parseGrantBody({ userId: 'x', app: 'app-12', role: 'utilisateur' }).app).toBe('app-12');
-  });
-
-  it('rejette un rôle inconnu', () => {
-    expect(() => parseGrantBody({ userId: 'x', app: 'app-01', role: 'superadmin' })).toThrow(BadRequestException);
-  });
-
-  it('rejette un userId manquant', () => {
-    expect(() => parseGrantBody({ app: 'app-01', role: 'admin' })).toThrow(BadRequestException);
-  });
-});

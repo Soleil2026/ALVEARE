@@ -6,8 +6,11 @@
   "scripts": {
     "dev:identity": "pnpm --filter @alveare/identity dev",
     "dev:web": "pnpm --filter @alveare/web-admin dev",
-    "build:identity": "pnpm --filter @alveare/identity build",
+    "dev:documents": "pnpm --filter @alveare/documents dev",
+    "build:identity": "pnpm build:contracts && pnpm build:auth && pnpm --filter @alveare/identity build",
+    "build:documents": "pnpm build:contracts && pnpm build:auth && pnpm --filter @alveare/documents build",
     "build:contracts": "pnpm --filter @alveare/contracts build",
+    "build:auth": "pnpm --filter @alveare/auth build",
     "test": "pnpm -r --if-present test"
   }
 }
