@@ -30,8 +30,13 @@ DATABASE_URL=postgresql://alveare_core_app:$(gen)@localhost:5432/alveare_core?sc
 # Keycloak local
 KEYCLOAK_BASE_URL=http://localhost:8081
 KEYCLOAK_ISSUER=http://localhost:8081/realms/alveare
+# E4 documents
+SHARE_SIGN_KEY=$(gen)$(gen)
+DOC_DATA_DIR=$ROOT/data/documents
+MAX_UPLOAD_MB=10
+DOC_PUBLIC_BASE_URL=http://localhost:4010
 EOF
-  echo "`.env` racine : écrit"
+  echo ".env racine : écrit"
 else
-  echo "`.env` racine : déjà présent, inchangé"
+  echo ".env racine : déjà présent, inchangé"
 fi

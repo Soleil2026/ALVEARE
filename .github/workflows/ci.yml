@@ -24,6 +24,21 @@ jobs:
       - run: pnpm build:contracts
       - run: pnpm --filter @alveare/contracts test
 
+  auth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:auth
+      - run: pnpm --filter @alveare/auth test
+
   identity:
     runs-on: ubuntu-latest
     steps:
@@ -37,6 +52,20 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:identity
+
+  documents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:documents
 
   web-admin:
     runs-on: ubuntu-latest
