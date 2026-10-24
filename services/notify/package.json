@@ -1,0 +1,26 @@
+{
+  "name": "@alveare/notify",
+  "private": true,
+  "scripts": {
+    "predev": "pnpm --filter @alveare/contracts --filter @alveare/auth run build",
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json && node --env-file=../../.env dist/main.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@alveare/auth": "workspace:*",
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
+    "@prisma/client": "^6.16.0",
+    "jose": "^6.1.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.2.4"
+  }
+}

@@ -4,16 +4,19 @@
 //   infra/postgres-init.sh) et est accédé via $queryRaw — décision
 //   assumée (plan E2 T2.6).
 // - Schéma 'documents' (E4) : fichiers + jetons de partage signés.
+// - Schéma 'notify' (E5) : messages de notification — adresse
+//   destinataire chiffrée au repos (JWE, clé NOTIFY_DATA_KEY env),
+//   indexée par hash ; jamais en clair côté log ou exposition API.
 
 generator client {
   provider = "prisma-client-js"
-  schemas  = ["identity", "documents"]
+  schemas  = ["identity", "documents", "notify"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  schemas  = ["identity", "documents"]
+  schemas  = ["identity", "documents", "notify"]
 }
 
 /// Attribution d'un rôle DANS une application B2B (doc B §2.4) :
@@ -87,4 +90,36 @@ model ShareToken {
 
   @@index([documentId, revokedAt])
   @@schema("documents")
+}
+
+/// Message de notification (FR-05.1) — V1 email + SMS adaptateur local.
+/// Minimisation (zone Red) : l'adresse (email/téléphone) n'est JAMAIS
+/// stockée en clair — chiffrement JWE (NOTIFY_DATA_KEY) + hash pour
+/// l'indexation. `via` = app émettrice, tracée (audit minimal).
+model Notification {
+  id              BigInt    @id @default(autoincrement())
+  /// "email" | "sms"
+  channel         String
+  /// template whitelisté : "verify-email" | "password-reset" |
+  /// "document-shared" | "test"
+  template        String
+  /// "fr" | "ar" | "en"
+  lang            String
+  /// hash (HMAC-SHA256 tronqué 16 octets) de l'adresse normalisée
+  recipientHash   String
+  /// adresse chiffrée JWE A256GCM (email ou E.164)
+  recipientCipher String
+  /// app émettrice ("identity", "documents", ...)
+  via             String
+  /// "queued" | "sent" | "failed"
+  status          String
+  /// raison d'échec (sans adresse — jamais d'erreur brute exposant PII)
+  error           String?
+  sentAt          DateTime?
+  createdAt       DateTime  @default(now())
+  /// anti-double envoi (idempotence de l'émetteur)
+  dedupKey        String?   @unique
+
+  @@index([recipientHash, createdAt])
+  @@schema("notify")
 }
