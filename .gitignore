@@ -1,0 +1,24 @@
+# dépendances
+node_modules/
+
+# secrets — JAMAIS dans git (règle B l.659)
+.env
+.env.*
+!.env.example
+
+# build
+dist/
+build/
+.next/
+.turbo/
+coverage/
+
+# caches
+.pnpm-store/
+.turbo/
+
+# macOS
+.DS_Store
+
+# logs
+*.log
