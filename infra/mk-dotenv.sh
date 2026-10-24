@@ -35,6 +35,11 @@ SHARE_SIGN_KEY=$(gen)$(gen)
 DOC_DATA_DIR=$ROOT/data/documents
 MAX_UPLOAD_MB=10
 DOC_PUBLIC_BASE_URL=http://localhost:4010
+# F front (web-admin)
+SESSION_KEY=$(gen)$(gen)
+IDENTITY_URL=http://localhost:4000
+DOCUMENTS_URL=http://localhost:4010
+REDIRECT_URI=http://localhost:3001/callback
 EOF
   echo ".env racine : écrit"
 else
