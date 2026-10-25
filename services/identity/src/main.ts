@@ -8,7 +8,10 @@
  *   → logique isolée dans src/token.ts (testée unitairement).
  * - Un compte global ≠ accès automatique (B §2.4) : le rôle EFFECTIF
  *   d'une app vient de la BD (role_grants), pas du realm seul.
- * - Audit sync dans audit.events (BullMQ + partitions arrivent en E3).
+ * - Audit = outbox transactionnel (@alveare/audit, E3 T3.3) : l'écrit
+ *   se fait dans la transaction métier (ou l'autocommit du client pour
+ *   les cas hors-tx — même borne de commit qu'avant) ; audit.events
+ *   n'est plus que la CIBLE du drain BullMQ du service audit :4030.
  */
 
 import 'reflect-metadata';
@@ -30,12 +33,14 @@ import {
   Param,
   Post,
   Req,
+  Res,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { isAdminEffective, requireToken, type TokenUser } from '@alveare/auth';
+import { auditOutbox } from '@alveare/audit';
 import { APP_PATTERN, parseGrantBody } from './grants';
 
 type AuthRequest = Request & { user?: TokenUser };
@@ -50,7 +55,16 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 }
 
-/** Journal d'audit sync (T2.6 — BullMQ + partitions mensuelles en E3). */
+/**
+ * Journal d'audit — E3 T3.3 (zone Red).
+ * Écritures : outbox transactionnel @alveare/audit (INSERT audit.outbox,
+ * paramétré, validé Zod par le helper). `record` est appelé dans le
+ * même périmètre d'exécution qu'avant (hors grandes transactions :
+ * l'INSERT simple est en autocommit sur le client, borne de commit
+ * inchangée — aucune transaction ouverte ici).
+ * Lectures : audits GET /admin/audit lit encore audit.events
+ * (table cible du drain, désormais partitionnée mensuellement).
+ */
 @Injectable()
 export class AuditService {
   constructor(private prisma: PrismaService) {}
@@ -61,14 +75,14 @@ export class AuditService {
     target?: string;
     details?: unknown;
   }) {
-    await this.prisma.$queryRaw`
-      INSERT INTO audit.events (actor, action, target, details)
-      VALUES (
-        ${input.actor},
-        ${input.action},
-        ${input.target ?? null},
-        ${input.details ? JSON.stringify(input.details) : null}::jsonb
-      )`;
+    await auditOutbox(this.prisma, this.prisma, {
+      actor: input.actor,
+      action: input.action,
+      ...(input.target ? { target: input.target } : {}),
+      ...(input.details !== undefined && input.details !== null
+        ? { details: input.details as Record<string, unknown> }
+        : {}),
+    });
   }
 
   async list(limit = 50) {
@@ -166,22 +180,30 @@ class AdminController {
         },
         update: { role: body.role, createdBy: admin.sub },
       });
-      await tx.$queryRaw`
-        INSERT INTO audit.events (actor, action, target, details)
-        VALUES (
-          ${admin.sub},
-          'role_grant.set',
-          ${`${body.userId}:${body.app}=${body.role}`},
-          ${JSON.stringify({ app: body.app, role: body.role })}::jsonb
-        )`;
+      // Audit DANS la transaction métier (borne de commit inchangée) :
+      // rollback métier => rollback de l'entrée outbox.
+      await auditOutbox(tx, tx, {
+        actor: admin.sub,
+        action: 'role_grant.set',
+        target: `${body.userId}:${body.app}=${body.role}`,
+        details: { app: body.app, role: body.role },
+      });
     });
     return { ok: true, granted: body };
   }
 
-  /** Lecture de l'audit (admin uniquement). */
+  /**
+   * Lecture de l'audit (admin uniquement) — endpoint hérité DÉPRÉCIÉ
+   * (E3 §5) : réponse inchangée, mais en-tête `Deprecation` annoncé ;
+   * bascule du backoffice vers GET /admin/audit du service audit :4030.
+   */
   @Get('audit')
   @UseGuards(AdminGuard)
-  async auditList() {
+  async auditList(@Res({ passthrough: true }) res: Response) {
+    res.setHeader(
+      'Deprecation',
+      'Tue, 25 Oct 2026 00:00:00 GMT; sunsetting=alveare/audit-service',
+    );
     return this.audit.list();
   }
 }
@@ -230,9 +252,12 @@ class ConsentsController {
         create: { userId: user.sub, consumingApp: app, scope },
         update: { revokedAt: null },
       });
-      await tx.$queryRaw`
-        INSERT INTO audit.events (actor, action, target)
-        VALUES (${user.sub}, 'consent.grant', ${`${app}:${scope}`})`;
+      // Audit DANS la transaction métier (borne de commit inchangée).
+      await auditOutbox(tx, tx, {
+        actor: user.sub,
+        action: 'consent.grant',
+        target: `${app}:${scope}`,
+      });
       return c;
     });
     return { ok: true, consentId: consent.id };
@@ -255,9 +280,12 @@ class ConsentsController {
         where: { id: existing.id },
         data: { revokedAt: new Date() },
       });
-      await tx.$queryRaw`
-        INSERT INTO audit.events (actor, action, target)
-        VALUES (${user.sub}, 'consent.revoke', ${`${existing.consumingApp}:${existing.scope}`})`;
+      // Audit DANS la transaction métier (borne de commit inchangée).
+      await auditOutbox(tx, tx, {
+        actor: user.sub,
+        action: 'consent.revoke',
+        target: `${existing.consumingApp}:${existing.scope}`,
+      });
     });
     return { ok: true };
   }

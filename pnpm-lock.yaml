@@ -165,6 +165,9 @@ importers:
 
   services/documents:
     dependencies:
+      '@alveare/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
       '@alveare/auth':
         specifier: workspace:*
         version: link:../../packages/auth
@@ -214,6 +217,9 @@ importers:
 
   services/identity:
     dependencies:
+      '@alveare/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
       '@alveare/auth':
         specifier: workspace:*
         version: link:../../packages/auth
@@ -260,6 +266,9 @@ importers:
 
   services/notify:
     dependencies:
+      '@alveare/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
       '@alveare/auth':
         specifier: workspace:*
         version: link:../../packages/auth

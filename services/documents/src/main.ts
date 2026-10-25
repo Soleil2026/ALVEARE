@@ -7,7 +7,10 @@
  * - Le contenu ne s'obtient QUE par URL temporaire signée (TTL+jti),
  *   révocable par le propriétaire — jamais via URL publique non signée.
  * - Ownership strict : un authentifié ne voit que ses documents.
- * - Audit sync de chaque upload/partage/révocation/téléchargement.
+ * - Audit de chaque upload/partage/révocation/téléchargement — outbox
+ *   transactionnel (@alveare/audit, E3) : écrit DANS la transaction
+ *   métier (bloquant-dans-tx conservé, revue C3) ; audit.events n'est
+ *   plus que la cible du drain BullMQ du service audit :4030.
  * - Auth = @alveare/auth (packages/shared point = source de vérité).
  */
 
@@ -45,6 +48,7 @@ import * as path from 'node:path';
 import * as QRCode from 'qrcode';
 import type { Express, Request, Response } from 'express';
 import { requireToken, type TokenUser } from '@alveare/auth';
+import { auditOutbox, type AuditRawClient } from '@alveare/audit';
 import { clampTtl, createShareToken, verifyShareToken } from './shares';
 import { isSafeStoredPath, MAX_UPLOAD_MB, sanitizeFileName, validateUpload } from './files';
 
@@ -64,16 +68,20 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 }
 
-/** Trace d'audit sync (schéma audit, table events — SQL brut). */
+/**
+ * Trace d'audit — E3 T3.3 (zone Red) : outbox transactionnel
+ * @alveare/audit. Le helper insère dans audit.outbox via la tx passée
+ * : il n'ouvre JAMAIS de transaction lui-même — l'appel reste dans la
+ * transaction métier de l'émetteur (exigence bloquant-dans-tx, revue
+ * C3 pour document/download : rollback métier => rollback audit).
+ */
 async function audit(
-  tx: { $queryRaw: (q: TemplateStringsArray, ...v: unknown[]) => Promise<unknown> },
+  tx: AuditRawClient,
   actor: string,
   action: string,
   target: string,
 ) {
-  await tx.$queryRaw`
-    INSERT INTO audit.events (actor, action, target)
-    VALUES (${actor}, ${action}, ${target})`;
+  await auditOutbox(tx, tx, { actor, action, target });
 }
 
 /** Exige un access token valide. */

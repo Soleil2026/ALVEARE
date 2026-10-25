@@ -15,6 +15,10 @@
  * - Les erreurs transport sont relayées génériques ('envoi impossible')
  *   : un message SMTP peut refléter l'adresse.
  * - Auth = @alveare/auth (RS256 épinglé, client autorisé).
+ * - Audit E3 : outbox transactionnel @alveare/audit (notify.send
+ *   INSIDE-tx ; notify.sent/notify.failed hors-tx comme avant) ;
+ *   audit.events n'est plus que la cible du drain du service audit
+ *   :4030.
  */
 
 import 'reflect-metadata';
@@ -38,6 +42,7 @@ import { PrismaClient, Prisma } from '@prisma/client';
 import * as path from 'node:path';
 import type { Request } from 'express';
 import { isAdminEffective, requireToken, type TokenUser } from '@alveare/auth';
+import { auditOutbox, type AuditRawClient } from '@alveare/audit';
 import { hashRecipient, sealRecipient } from './pii';
 import { parseSendInput, type Lang, type Template } from './validate';
 import { MAX_EMITTER_PER_WINDOW, floodScore } from './flood';
@@ -48,16 +53,24 @@ import { outboxFile } from './outbox';
 
 type AuthRequest = Request & { user?: TokenUser };
 
-/** Trace d'audit sync (schéma audit, table events — SQL brut). */
+/**
+ * Trace d'audit — E3 T3.3 (zone Red) : outbox transactionnel
+ * @alveare/audit. Le helper n'ouvre JAMAIS de transaction lui-même :
+ * `client`/`tx` reçoivent le même objet —
+ *   * depuis la transaction métier (`tx`) : audit INSIDE-tx, borne de
+ *     commit inchangée (rollback métier => rollback audit) ;
+ *   * après envoi (`this.prisma`) : INSERT unique en autocommit sur le
+ *     client — même borne de commit qu'avant (l'ancienne écriture
+ *     directe audit.events était aussi hors transaction explicite),
+ *     aucun begin/commit ouvert ici (consigne T3.3).
+ */
 async function audit(
-  tx: { $queryRaw: (q: TemplateStringsArray, ...v: unknown[]) => Promise<unknown> },
+  client: AuditRawClient,
   actor: string,
   action: string,
   target: string,
 ) {
-  await tx.$queryRaw`
-    INSERT INTO audit.events (actor, action, target)
-    VALUES (${actor}, ${action}, ${target})`;
+  await auditOutbox(client, client, { actor, action, target });
 }
 
 @Injectable()

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@alveare/auth": "workspace:*",
+    "@alveare/audit": "workspace:*",
     "@alveare/contracts": "workspace:*",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
