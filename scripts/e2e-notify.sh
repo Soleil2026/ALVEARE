@@ -5,6 +5,10 @@
 #   template `test` interdit au simple user (revue N5-3) →
 #   dedupKey idempotent (scoppé via, revue N5-1) → template/lang/via
 #   inconnus → 400 → anti-flood 5/min → audit traces.
+# E3 audit : la piste est d'abord écrite dans audit.outbox puis DRAINÉE
+# vers audit.events par le service audit :4030 (sweep 30 s) — le
+# compte ci-dessous accepte donc « events OU outbox non livrée » (pas
+# de double comptage : une ligne delivered=true est déjà dans events).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 set -a; . "$ROOT/.env"; . "$ROOT/infra/.env"; set +a
@@ -130,9 +134,11 @@ echo "✓ anti-flood : 5 passent, 6e → 429"
 # 12) audit : traces notify.*
 n=$(PGPASSWORD="$(sed -n 's/^DATABASE_URL=postgresql:\/\/alveare_core_app:\([^@]*\)@.*/\1/p' "$ROOT/.env")" \
   psql -h localhost -U alveare_core_app -d alveare_core -tAc \
-  "SELECT count(*) FROM audit.events WHERE action IN ('notify.send','notify.sent','notify.failed')")
+  "SELECT (SELECT count(*) FROM audit.events WHERE action IN ('notify.send','notify.sent','notify.failed'))
+        + (SELECT count(*) FROM audit.outbox
+             WHERE delivered = false AND payload->>'action' IN ('notify.send','notify.sent','notify.failed'))")
 [ "$n" -ge 8 ] || fail "audit : $n traces notify seulement"
 echo "$n" > /tmp/alv-e5-audit-count
-echo "✓ audit : $n traces notify"
+echo "✓ audit : $n traces notify (events + outbox en attente)"
 
 echo "E2E NOTIFY : OK (13 preuves)"

@@ -3,6 +3,10 @@
 #   bash infra/mk-dotenv.sh && bash infra/postgres-init.sh
 #   docker compose up -d  (infra/) + seed-dev.sh + pnpm dev:identity
 # Sortie : Preuve-lignes + code de sortie (echec si une preuve manque).
+# E3 audit : la piste est d'abord écrite dans audit.outbox puis DRAINÉE
+# vers audit.events par le service audit :4030 (sweep 30 s) — le
+# compte ci-dessous accepte donc « events OU outbox non livrée » (pas
+# de double comptage : une ligne delivered=true est déjà dans events).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 set -a; . "$ROOT/.env"; . "$ROOT/infra/.env"; set +a
@@ -45,8 +49,10 @@ echo "✓ consentement + révocation"
 
 dbpass="$(sed -n 's/^DATABASE_URL=postgresql:\/\/alveare_core_app:\([^@]*\)@.*/\1/p' "$ROOT/.env")"
 n=$(PGPASSWORD="$dbpass" psql -h localhost -U alveare_core_app -d alveare_core -tAc \
-  "SELECT count(*) FROM audit.events WHERE action IN ('consent.grant','consent.revoke')")
+  "SELECT (SELECT count(*) FROM audit.events WHERE action IN ('consent.grant','consent.revoke'))
+        + (SELECT count(*) FROM audit.outbox
+             WHERE delivered = false AND payload->>'action' IN ('consent.grant','consent.revoke'))")
 [ "$n" -ge 2 ] || fail "audit : traces consentement manquantes ($n)"
-echo "✓ audit : $n trace(s) de consentement"
+echo "✓ audit : $n trace(s) de consentement (events + outbox en attente)"
 
 echo "E2E IDENTITÉ : OK (6 preuves)"

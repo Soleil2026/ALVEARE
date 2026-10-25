@@ -40,10 +40,19 @@ SESSION_KEY=$(gen)$(gen)
 IDENTITY_URL=http://localhost:4000
 DOCUMENTS_URL=http://localhost:4010
 REDIRECT_URI=http://localhost:3001/callback
+# E3 audit (worker BullMQ) — Redis du compose infra/ :6379, DB 0
+REDIS_URL=redis://localhost:6379/0
 EOF
   echo ".env racine : écrit"
 else
   echo ".env racine : déjà présent, inchangé"
+fi
+
+# E3 audit : REDIS_URL manquante = append idempotent (cas où .env est
+# déjà présent ; les services le lisent via node --env-file).
+if ! grep -q '^REDIS_URL=' "$ROOT/.env"; then
+  printf 'REDIS_URL=redis://localhost:6379/0\n' >> "$ROOT/.env"
+  echo ".env : REDIS_URL ajoutée (E3 audit)"
 fi
 
 # --- .env.runtime (E1, PgBouncer) ---

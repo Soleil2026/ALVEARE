@@ -3,6 +3,10 @@
 #   identity (:4000) + documents (:4010) + Keycloak.
 # Preuves : upload → sha256 → partage signé → téléchargement →
 #   vérification publique → révocation → accès refusé → mime refusé.
+# E3 audit : la piste est d'abord écrite dans audit.outbox puis DRAINÉE
+# vers audit.events par le service audit :4030 (sweep 30 s) — le
+# compte ci-dessous accepte donc « events OU outbox non livrée » (pas
+# de double comptage : une ligne delivered=true est déjà dans events).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 set -a; . "$ROOT/.env"; . "$ROOT/infra/.env"; set +a
@@ -73,8 +77,10 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" 
 [ "$code" = "404" ] || fail "document attendu disparu (404), obtenu $code"
 n=$(PGPASSWORD="$(sed -n 's/^DATABASE_URL=postgresql:\/\/alveare_core_app:\([^@]*\)@.*/\1/p' "$ROOT/.env")" \
   psql -h localhost -U alveare_core_app -d alveare_core -tAc \
-  "SELECT count(*) FROM audit.events WHERE action IN ('document.upload','document.download','share.grant','share.revoke','document.delete')")
+  "SELECT (SELECT count(*) FROM audit.events WHERE action IN ('document.upload','document.download','share.grant','share.revoke','document.delete'))
+        + (SELECT count(*) FROM audit.outbox
+             WHERE delivered = false AND payload->>'action' IN ('document.upload','document.download','share.grant','share.revoke','document.delete'))")
 [ "$n" -ge 5 ] || fail "audit : $n traces seulement"
-echo "✓ suppression + audit : $n traces document"
+echo "✓ suppression + audit : $n traces document (events + outbox en attente)"
 
 echo "E2E DOCUMENTS : OK (10 preuves)"

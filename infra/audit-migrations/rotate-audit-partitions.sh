@@ -21,6 +21,11 @@
 #   Le mot de passe NE DOIT PAS être commité : lire l'URI du .env via
 #   process substitution, ex. :
 #   bash ... "$(sed -n 's/^DATABASE_URL=//p' .env | sed 's/?.*//')"
+# Déclenchement (plan E3 §3, T3.6) :
+#   * V1 = MANUEL (opérateur, fiche docs/ops-audit.md) : le script est
+#     un no-op sans partition candidate et ne JAMAIS automatique sans
+#     visa revue — mode « cron » différé V2 (crontab/deploy-job, même
+#     garantie : exit 0 + NOTICE en cas de rien à faire).
 set -euo pipefail
 
 PGURL="${1:-${PGURL:-}}"

@@ -5,6 +5,7 @@
   "packageManager": "pnpm@12.3.4",
   "scripts": {
     "dev:identity": "pnpm --filter @alveare/identity dev",
+    "dev:audit": "pnpm --filter @alveare/audit-service dev",
     "dev:web": "pnpm --filter @alveare/web-admin dev",
     "dev:documents": "pnpm --filter @alveare/documents dev",
     "build:identity": "pnpm build:contracts && pnpm build:auth && pnpm --filter @alveare/identity build",

@@ -26,6 +26,8 @@ import {
   type AuditEntryInput,
 } from '@alveare/contracts';
 
+export { signalDrain, AUDIT_DRAIN_QUEUE, type SignalDrainOptions } from './drain-signal';
+
 /**
  * Client min-privilege : surface SQL brute de Prisma
  * (PrismaService du service émetteur — `$executeRaw` / `$queryRaw`).
