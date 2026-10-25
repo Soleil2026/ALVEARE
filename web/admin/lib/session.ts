@@ -12,9 +12,8 @@ import type { NextResponse } from 'next/server';
 export type SessionClaims = {
   /** access token Keycloak (server-side uniquement) */
   at: string;
-  /** refresh token pour prolongation (route proxy) */
+  /** refresh token pour prolongation (middleware — silent refresh D-1) */
   rt?: string;
-  idToken?: string;
   exp: number;
 };
 
@@ -32,13 +31,26 @@ function sessionKey(): Uint8Array {
   return Uint8Array.from(Buffer.from(hex, 'hex'));
 }
 
-/** Chiffre les claims en JWE (dir + A256GCM). */
+/** Chiffre les claims en JWE (dir + A256GCM).
+ * Garde-fou taille (S4) : au-delà de 3500 octets sérialisés (bien
+ * avant les ~4096 fataux rejetés par les navigateurs — leçon F6),
+ * ALERTE forte : une croissance de payload doit être consciente,
+ * jamais silencieuse. */
+export const MAX_SESSION_BYTES = 3500;
+
 export async function encodeSession(claims: SessionClaims): Promise<string> {
-  return new EncryptJWT({ ...claims })
+  const jwe = await new EncryptJWT({ ...claims })
     .setProtectedHeader({ alg: 'dir', enc: 'A256GCM' })
     .setIssuedAt()
     .setExpirationTime(Math.min(claims.exp, Date.now() / 1000 + SESSION_HOURS * 3600))
     .encrypt(sessionKey());
+  if (jwe.length > MAX_SESSION_BYTES) {
+    console.error(
+      `session trop grande : ${jwe.length} octets (> ${MAX_SESSION_BYTES}) —` +
+      ' risque de rejet navigateur (~4096, leçon F6). Payload à resserrer.',
+    );
+  }
+  return jwe;
 }
 
 /** Déchiffre ; null si falsifié/obsolète (jamais d'exception au client). */
@@ -55,7 +67,6 @@ export async function decodeSession(jwe: string | undefined): Promise<SessionCla
     return {
       at: payload.at,
       rt: typeof payload.rt === 'string' ? payload.rt : undefined,
-      idToken: typeof payload.idToken === 'string' ? payload.idToken : undefined,
       exp: payload.exp,
     };
   } catch {

@@ -14,13 +14,26 @@ beforeAll(() => {
 describe('encodeSession / decodeSession', () => {
   it('round-trip complet (exp modeste préservé)', async () => {
     const exp = Math.floor(Date.now() / 1000) + 300;
-    const jwe = await encodeSession({ at: 'AT', rt: 'RT', idToken: 'ID', exp });
+    const jwe = await encodeSession({ at: 'AT', rt: 'RT', exp });
     const s = await decodeSession(jwe);
     expect(s).not.toBeNull();
     expect(s?.at).toBe('AT');
     expect(s?.rt).toBe('RT');
-    expect(s?.idToken).toBe('ID');
+    // S4/décision D-4 : le claim idToken n'existe plus (fix 4096 octets
+    // consolidé PAR LE CODE)
+    expect((s as Record<string, unknown> | null)?.idToken).toBeUndefined();
     expect(s?.exp).toBe(exp);
+  });
+
+  it('garde-fou taille : une session réaliste reste < 3500 octets (S4)', async () => {
+    const exp = Math.floor(Date.now() / 1000) + 300;
+    // payload réaliste : access token Keycloak ~1000 car + refresh ~900
+    const jwe = await encodeSession({
+      at: 'x'.repeat(1000),
+      rt: 'y'.repeat(900),
+      exp,
+    });
+    expect(jwe.length).toBeLessThan(3500);
   });
 
   it('un exp farfelu est borné à 12 h (protection anti-stagnation)', async () => {
