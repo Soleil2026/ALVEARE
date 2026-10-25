@@ -34,6 +34,11 @@ function fail(req: NextRequest, reason: string) {
 }
 
 export async function GET(req: NextRequest) {
+  // F-9 : défense en profondeur — la callback n'accepte que l'host du
+  // REDIRECT_URI configuré (un seul déploiement par URI en V1).
+  if (req.nextUrl.host !== new URL(OIDC.redirectUri).host) {
+    return fail(req, 'host inattendu (≠ redirect_uri configuré)');
+  }
   const code = req.nextUrl.searchParams.get('code');
   const state = req.nextUrl.searchParams.get('state');
   if (!code || !state) return fail(req, 'code/state manquants');

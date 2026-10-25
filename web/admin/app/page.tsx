@@ -220,9 +220,11 @@ export default async function Page() {
             <UploadForm />
           </section>
 
-          <a href="/logout" style={{ ...styles.button, background: '#3a2450' }}>
-            Déconnexion
-          </a>
+          <form action="/logout" method="post">
+            <button type="submit" style={{ ...styles.button, background: '#3a2450' }}>
+              Déconnexion
+            </button>
+          </form>
         </>
       )}
     </main>
