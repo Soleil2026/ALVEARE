@@ -5,9 +5,16 @@
   "loginWithEmailAllowed": true,
   "roles": {
     "realm": [
-      { "name": "admin", "description": "Admin du socle (MFA obligatoire)" },
-      { "name": "gestionnaire" },
-      { "name": "utilisateur" }
+      {
+        "name": "admin",
+        "description": "Admin du socle (MFA obligatoire)"
+      },
+      {
+        "name": "gestionnaire"
+      },
+      {
+        "name": "utilisateur"
+      }
     ]
   },
   "clients": [
@@ -18,9 +25,15 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
-      "redirectUris": ["http://localhost:3001/*"],
-      "webOrigins": ["http://localhost:3001"],
-      "attributes": { "pkce.code.challenge.method": "S256" }
+      "redirectUris": [
+        "http://localhost:3001/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3001"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      }
     },
     {
       "clientId": "identity-api",
@@ -28,6 +41,22 @@
       "protocol": "openid-connect",
       "bearerOnly": true,
       "directAccessGrantsEnabled": false
+    },
+    {
+      "clientId": "audit-e2e",
+      "protocol": "openid-connect",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "secret": "audit-e2e-dev-secret",
+      "defaultClientScopes": [
+        "profile",
+        "email",
+        "roles",
+        "web-origins"
+      ]
     }
   ],
   "users": [
@@ -38,8 +67,13 @@
       "lastName": "Dev",
       "enabled": true,
       "emailVerified": true,
-      "requiredActions": ["CONFIGURE_TOTP"],
-      "realmRoles": ["admin"]
+      "requiredActions": [
+        "CONFIGURE_TOTP"
+      ],
+      "realmRoles": [
+        "admin"
+      ],
+      "credentials": []
     },
     {
       "username": "user@dev.local",

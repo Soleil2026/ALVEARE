@@ -28,7 +28,21 @@ function defaultJwks(): JWTVerifyGetKey {
 }
 
 /** clients autorisés à émettre des tokens acceptés par ce service */
-export const ALLOWED_AZP: ReadonlySet<string> = new Set(['web-admin', 'identity-api']);
+export const ALLOWED_AZP: ReadonlySet<string> = new Set([
+  'web-admin',
+  'identity-api',
+  // E3 T3.5 : extension DÉV uniquement via AUTH_E2E_CLIENTS (CSV) —
+  // le var n'est jamais posé en prod ; sert au client compte de
+  // service « audit-e2e » du e2e headless (lecture admin).
+  ...e2eExtraAzp(),
+]);
+
+function e2eExtraAzp(): string[] {
+  return (process.env.AUTH_E2E_CLIENTS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 export type TokenUser = {
   sub: string;

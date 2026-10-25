@@ -146,12 +146,13 @@ describe('auditOutbox — mapping des ids retournés', () => {
     expect(calls.map((c) => c.kind)).toEqual(['tx', 'tx']);
   });
 
-  it('produit le rattachement outbox_source via le CTE UPDATE', async () => {
+  it("produit le rattachement outbox_source tamponné à l'INSERT (nextval)", async () => {
     const { client: tx, calls } = makeFake('tx', [[{ id: 9n }]]);
     await auditOutbox(tx, tx, { actor: 'user-1', action: 'role.delegation' });
-    expect(calls[0].sql).toContain(
-      "jsonb_build_object('outbox_source'",
-    );
+    expect(calls[0].sql).toContain('outbox_source');
+    // Garde-fou regression (piège snapshot) : le rattachement NE PEUT
+    // PAS dépendre d'un UPDATE dans le même énoncé (invisible).
+    expect(calls[0].sql).not.toMatch(/UPDATE[\s\S]*from/i);
   });
 
   it('échoue net si le RETURNING ne rapporte pas une seule ligne', async () => {

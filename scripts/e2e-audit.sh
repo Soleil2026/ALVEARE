@@ -52,9 +52,18 @@ token_user=$(curl -s -X POST "$KC/protocol/openid-connect/token" \
   -d username=user@dev.local -d password="$ALV_USER_PASS" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')
 [ -n "$token_user" ] || fail "pas de token user"
+# Token admin (E3) : compte de service du client e2e « audit-e2e »
+# (client_credentials, rôle admin posé par seed-dev.sh — MFA sans objet :
+# ce client n'est pas interactif ; les vrais admins gardent MFA obligatoire,
+# cf. realm requiredActions CONFIGURE_TOTP). Secret DÉV dans le realm seed,
+# jamais utilisé hors environnement local.
+AUDIT_E2E_SECRET=$(python3 -c "
+import json
+r=json.load(open('$ROOT/infra/keycloak/realm-alveare.json'))
+print(next(c['secret'] for c in r.get('clients',[]) if c.get('clientId')=='audit-e2e'))")
 token_admin=$(curl -s -X POST "$KC/protocol/openid-connect/token" \
-  -d grant_type=password -d client_id=web-admin -d scope=openid \
-  -d username=admin@dev.local -d password="$ALV_ADMIN_PASS" \
+  -d grant_type=client_credentials -d client_id=audit-e2e \
+  -d "client_secret=$AUDIT_E2E_SECRET" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')
 [ -n "$token_admin" ] || fail "pas de token admin"
 echo "✓ tokens Keycloak (user + admin)"

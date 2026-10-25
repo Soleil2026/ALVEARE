@@ -90,26 +90,26 @@ export async function auditOutbox(
     };
 
     // INSERT + rattachement outbox_source en UN SEUL ÉNONCÉ
-    // paramétré : CTE `ins` (INSERT ... RETURNING id) puis CTE `upd`
-    // qui fusionne l'id DANS le payload déjà stocké
-    // (jsonb_build_object) — la dédup drain (unicité (outbox_id, at))
-    // a son lien prêt sans aller-retour supplémentaire.
+    // paramétré. ATTENTION (piège de snapshot PostgreSQL), l'approche
+    // `WITH ins AS (INSERT …) UPD AS (UPDATE …)` NE MARCHE PAS : tous
+    // les CTE modifiantes d'un même énoncé partagent le snapshot de
+    // départ, l'UPDATE ne voit donc JAMAIS la ligne de l'INSERT. On
+    // réserve donc l'id AVANT (nextval dans une CTE SELECT — pas
+    // d'écriture, pas de conflit de snapshot) et le payload est
+    // tamponné à l'INSERT même (jsonb_set, outbox_source = id).
     const rows = await tx.$queryRaw<OutboxReturningRow>`
-      WITH ins AS (
-        INSERT INTO audit.outbox (created_at, payload)
-        VALUES (
-          COALESCE(${parsed.at ?? null}::timestamptz, now()),
-          ${JSON.stringify(payload)}::jsonb
+      WITH nid AS (SELECT nextval('audit.outbox_id_seq') AS id)
+      INSERT INTO audit.outbox (id, created_at, payload)
+      SELECT
+        id,
+        COALESCE(${parsed.at ?? null}::timestamptz, now()),
+        jsonb_set(
+          ${JSON.stringify(payload)}::jsonb,
+          '{outbox_source}',
+          to_jsonb(id)
         )
-        RETURNING id
-      ),
-      upd AS (
-        UPDATE audit.outbox
-        SET payload = payload || jsonb_build_object('outbox_source', ins.id)
-        FROM ins
-        WHERE audit.outbox.id = ins.id
-      )
-      SELECT id FROM ins`;
+      FROM nid
+      RETURNING id`;
 
     if (rows.length !== 1) {
       throw new Error('auditOutbox : INSERT audit.outbox sans RETURNING id');

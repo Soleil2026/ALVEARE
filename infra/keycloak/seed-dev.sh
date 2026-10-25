@@ -38,4 +38,13 @@ uid=$(get_uid user@dev.local)
 kcadm update "users/$uid" -r alveare -s firstName=User -s lastName=Dev
 set_creds "$uid" "$ALV_USER_PASS"
 
+# 3) e3 : le compte de service du client e2e (audit-e2e, non interactif,
+#    MFA sans objet) reçoit le rôle realm "admin" — tokens client_credentials
+#    uniquement, jamais un humain.
+sa_uid=$(kcadm get users -r alveare -q "username=service-account-audit-e2e" --fields id \
+  | sed -n 's/.*"id" *: *"\([^"]*\)".*/\1/p')
+[ -n "$sa_uid" ] || { echo "e3-seed KO : service-account-audit-e2e introuvable" >&2; exit 1; }
+kcadm add-roles -r alveare --uid "$sa_uid" --rolename admin
+echo "e3-seed : role admin -> service-account-audit-e2e ($sa_uid)"
+
 echo "seed-dev OK : profils complets + passwords (temporary=false) posés"
