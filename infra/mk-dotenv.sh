@@ -45,3 +45,24 @@ EOF
 else
   echo ".env racine : déjà présent, inchangé"
 fi
+
+# --- .env.runtime (E1, PgBouncer) ---
+# Utilisé par les services applicatifs au runtime (node --env-file).
+# prisma migrate / psql restent sur .env = :5432 direct (les migrations
+# ne traversent pas un pool transactionnel). Si .env change (rotation
+# de mot de passe), régénérer : rm .env.runtime && bash infra/mk-dotenv.sh
+if [ ! -f "$ROOT/.env.runtime" ]; then
+  # copie de .env SANS la ligne DATABASE_URL, puis reconstruction
+  # propre de cette ligne via le host :6432 (aucun passage par sed avec
+  # & — ni aucun affichage du mot de passe).
+  grep -v '^DATABASE_URL=' "$ROOT/.env" > "$ROOT/.env.runtime"
+  pass=$(sed -n 's/^DATABASE_URL=postgresql:\/\/alveare_core_app:\([^@]*\)@.*/\1/p' "$ROOT/.env")
+  {
+    printf 'DATABASE_URL=postgresql://alveare_core_app:%s@localhost:6432/alveare_core?schema=identity&pgbouncer=true&connection_limit=10&pool_timeout=5\n' "$pass"
+  } >> "$ROOT/.env.runtime"
+  chmod 600 "$ROOT/.env.runtime"
+  unset pass
+  echo ".env.runtime : écrit (PgBouncer :6432)"
+else
+  echo ".env.runtime : déjà présent, inchangé"
+fi

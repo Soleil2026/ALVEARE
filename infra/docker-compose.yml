@@ -23,5 +23,32 @@ services:
     volumes:
       - redis-data:/data
 
+  # E1 — pooler PostgreSQL (transaction pooling) : les services
+  # applicatifs passent par :6432 ; prisma migrate / psql gardent
+  # la connexion directe :5432 (les migrations ne doivent pas traverser
+  # un pool transactionnel). cf. restes E1.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p0
+    environment:
+      DB_HOST: host.docker.internal
+      DB_PORT: "5432"
+      DB_DATABASE: alveare_core
+      DB_USER: alveare_core_app
+      # mot de passe en clair dans userlist.txt — pgbouncer peut alors
+      # faire l'authentification SCRAM vers le serveur (PG 18). Fichier
+      # généré, jamais commité.
+      AUTH_FILE: /etc/pgbouncer/userlist.txt
+      AUTH_TYPE: scram-sha-256
+      LISTEN_PORT: "6432"
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: "20"
+      MAX_CLIENT_CONN: "100"
+      SERVER_RESET_QUERY: DISCARD ALL
+      LOG_LEVEL: info
+    volumes:
+      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    ports:
+      - "127.0.0.1:6432:6432"   # jamais exposé hors loopback en dev
+
 volumes:
   redis-data:
