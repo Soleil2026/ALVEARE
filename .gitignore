@@ -20,6 +20,7 @@ coverage/
 # caches
 .pnpm-store/
 .turbo/
+*.tsbuildinfo
 
 # macOS
 .DS_Store
