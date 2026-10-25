@@ -90,12 +90,13 @@ CREATE INDEX transactions_pending_idx
 CREATE TABLE payments.refunds (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   txn_id      uuid NOT NULL REFERENCES payments.transactions(id),
+  refund_ref  text NOT NULL,          -- clé d'idempotence de l'app
   amount      bigint NOT NULL CHECK (amount > 0),   -- partiel ou total
   reason      text,
   provider_ref text,
   created_at  timestamptz NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX refunds_idem_idx ON payments.refunds (txn_id, reason);
+CREATE UNIQUE INDEX refunds_idem_idx ON payments.refunds (txn_id, refund_ref);
 
 CREATE TABLE payments.webhook_dead (    -- miroir audit.outbox_deadletter
   payload      jsonb NOT NULL,
