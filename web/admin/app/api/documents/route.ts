@@ -1,9 +1,10 @@
 /**
  * web-admin — proxy server-side vers le service documents (:4010).
  * Le navigateur ne connaît JAMAIS le access token : il frappe ce
- * proxy avec son cookie de session chiffré. Sur 401 POST, tentative
- * de refresh transparente (refresh_token de la session) ; échec →
- * cookie détruit, le client se reconnecte.
+ * proxy avec son cookie de session chiffré. Le renouvellement sur
+ * 401 passe exclusivement par ensureSession (single-flight partagé
+ * avec le middleware — revue N6 M-1) ; échec définitif → cookie
+ * détruit, le client se reconnecte.
  * Remédiations revue : F-1 cap de taille AVANT bufferisation (la RAM
  * du front n'absorbe jamais un corps non borné) ; F-6 erreurs
  * upstream mappées en messages génériques, jamais re-passées telles
@@ -12,13 +13,13 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { refreshTokens } from '../../../lib/oidc';
 import {
   SESSION_COOKIE,
+  SESSION_HOURS,
   decodeSession,
-  encodeSession,
   sessionCookieOptions,
 } from '../../../lib/session';
+import { ensureSession } from '../../../lib/ensure-session';
 
 const UPSTREAM = process.env.DOCUMENTS_URL ?? 'http://localhost:4010';
 /** cohérent avec la limite multer du service documents */
@@ -85,36 +86,42 @@ export async function POST(req: NextRequest) {
   }).catch(() => null);
   if (!upstream) return NextResponse.json({ error: 'documents injoignable' }, { status: 502 });
 
-  // 401 → une tentative de refresh, puis re-jeu de la requête
-  if (upstream.status === 401 && session.rt) {
-    try {
-      const fresh = await refreshTokens(session.rt);
-      const exp = Math.floor(Date.now() / 1000) + (fresh.expires_in ?? 300);
+  // 401 → un SEUL canal de renouvellement (M-1 (d) revue N6 : même
+  // ensureSession single-flight que le middleware — jamais un refresh
+  // parallèle hors course), puis re-jeu de la requête
+  if (upstream.status === 401) {
+    const ensured = await ensureSession(req.cookies.get(SESSION_COOKIE)?.value);
+    if (ensured.status === 'renewée') {
       const retry = await fetch(`${UPSTREAM}/documents`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${fresh.access_token}` },
+        headers: { Authorization: `Bearer ${ensured.claims.at}` },
         body: form,
       });
-      if (retry.ok) {
-        const data = await guardedJson(retry);
-        if (!data) {
-          return NextResponse.json({ error: 'documents : réponse invalide' }, { status: 502 });
-        }
-        const rep = NextResponse.json(data, { status: 201 });
-        rep.cookies.set(
-          SESSION_COOKIE,
-          await encodeSession({
-            at: fresh.access_token,
-            rt: fresh.refresh_token ?? session.rt,
-            exp,
-          }),
-          sessionCookieOptions(fresh.expires_in ?? 300),
-        );
-        return rep;
+      if (!retry.ok) {
+        // le re-jeu a échoué pour une AUTRE raison que l'auth :
+        // ne pas mentir 'session expirée' — mapper honnêtement
+        return NextResponse.json({ error: mappedError(retry.status) }, { status: retry.status });
       }
-    } catch {
-      // refresh refusé → session détruite plus bas
+      const data = await guardedJson(retry);
+      if (!data) {
+        return NextResponse.json({ error: 'documents : réponse invalide' }, { status: 502 });
+      }
+      const rep = NextResponse.json(data, { status: 201 });
+      rep.cookies.set(
+        SESSION_COOKIE,
+        ensured.jwe,
+        sessionCookieOptions(SESSION_HOURS * 3600), // cohérent middleware S1
+      );
+      return rep;
     }
+    if (ensured.status === 'transient') {
+      // m-1 : Keycloak KO n'est pas une mort — ne PAS détruire le cookie
+      return NextResponse.json(
+        { error: 'documents momentanément injoignable, réessayez' },
+        { status: 503 },
+      );
+    }
+    // 'expirée' (ou 'valide' refusé par l'upstream) : session morte
     const dead = NextResponse.json(
       { error: 'session expirée, reconnectez-vous' },
       { status: 401 },

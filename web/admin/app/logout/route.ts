@@ -22,7 +22,10 @@ function sameDeploymentHost(candidate: string | undefined, host: string): boolea
 }
 
 export async function GET() {
-  return NextResponse.json({ error: 'méthode interdite' }, { status: 405 });
+  return NextResponse.json({ error: 'méthode interdite' }, {
+    status: 405,
+    headers: { Allow: 'POST' }, // m-6 : conforme RFC 9110 §10.4.6
+  });
 }
 
 export async function POST(req: NextRequest) {

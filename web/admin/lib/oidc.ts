@@ -87,7 +87,12 @@ export async function exchangeCode(
   return (await res.json()) as TokenResponse;
 }
 
-/** Refresh grant (public client). */
+/** Refresh grant (public client). Entend la différence mort
+ * définitive (4xx : invalid_grant — rt révoqué/expiré) ET
+ * indisponibilité temporaire (5xx/réseau — Keycloak down) : M-1/m-1.
+ * La classification est consommée par ensureSession. */
+export class RefreshTransientError extends Error {}
+
 export async function refreshTokens(
   refreshToken: string,
 ): Promise<TokenResponse> {
@@ -101,6 +106,7 @@ export async function refreshTokens(
     }),
   });
   if (!res.ok) {
+    if (res.status >= 500) throw new RefreshTransientError('keycloak indisponible');
     throw new Error('refresh refusé');
   }
   return (await res.json()) as TokenResponse;

@@ -3,13 +3,22 @@
  * FRONT-HARDEN, décision D-1 : refresh PAR le rt stocké, serveur
  * uniquement — jamais un token au navigateur, pas d'iframe KC).
  * Appelé par le middleware (runtime Node) ; le middleware persiste la
- * session ré-encodée (browser + downstream). Le refresh n'est tenté
- * que si l'access token approche de sa fin (RENEW_MARGIN_SEC) : dans
- * les autres cas, un simple pas de printemps sans coût.
- * Zone Red : revue indépendante obligatoire.
+ * session ré-encodée (browser + downstream).
+ *
+ * Zone Red — revue N6 (M-1) :
+ * - SINGLE-FLIGHT : un refresh à la fois PAR cookie — n requêtes
+ *   parallèles partagent le MÊME promesse de renouvellement (le
+ *   middleware tourne par requête).
+ * - ADOPTION : une requête concurrente qui arrive APRÈS un
+ *   renouvellement réussi adopte le résultat frais (TTL court) —
+ *   la course ne déconnecte pas l'utilisateur.
+ * - CLASSIFICATION : Keycloak down (5xx/réseau) = 'transient' — le
+ *   middleware ne détruit PAS le cookie (seul un 4xx invalid_grant est
+ *   une mort ; sinon une panne KC de 2 min délogerait tout le monde).
  */
 
-import { refreshTokens } from './oidc';
+import { createHash } from 'node:crypto';
+import { RefreshTransientError, refreshTokens as defaultRefresh } from './oidc';
 import { decodeSession, encodeSession, type SessionClaims } from './session';
 
 /** Si la session meurt dans moins de ce délai, on renewe. */
@@ -26,13 +35,30 @@ export type Ensured =
   | { status: 'absente' }
   | { status: 'valide'; claims: SessionClaims }
   | { status: 'renewée'; claims: SessionClaims; jwe: string }
-  /** refresh refusé/rendu impossible : session morte (le middleware
-   * détruit le cookie ; la page affiche la reconnexion). */
+  /** Keycloak indisponible (pas une mort) : ne pas détruire le cookie */
+  | { status: 'transient'; claims: SessionClaims }
+  /** refresh refusé (invalid_grant) : session morte. */
   | { status: 'expirée' };
+
+/** internes de course — purgés par resetEnsureState (tests, hot-reload) */
+const inFlight = new Map<string, Promise<Ensured>>();
+const recent = new Map<string, { ts: number; result: Ensured }>();
+/** TTL d'adoption d'un renouvellement fraîchement réussi (M-1). */
+export const ADOPTION_TTL_MS = 5_000;
+
+function keyOf(jwe: string): string {
+  return createHash('sha256').update(jwe).digest('hex');
+}
+
+/** harnais de test / hot-reload : purge des courses mémorisées. */
+export function resetEnsureState(): void {
+  inFlight.clear();
+  recent.clear();
+}
 
 export async function ensureSession(
   jwe: string | undefined,
-  refresh: RefreshFn = refreshTokens,
+  refresh: RefreshFn = defaultRefresh,
 ): Promise<Ensured> {
   const session = await decodeSession(jwe);
   if (!session) return { status: 'absente' };
@@ -40,21 +66,48 @@ export async function ensureSession(
   if (remain > RENEW_MARGIN_SEC || !session.rt) {
     return { status: 'valide', claims: session };
   }
-  try {
-    const fresh = await refresh(session.rt);
-    if (typeof fresh.access_token !== 'string' || fresh.access_token.length === 0) {
-      return { status: 'expirée' };
-    }
-    const claims: SessionClaims = {
-      at: fresh.access_token,
-      rt: typeof fresh.refresh_token === 'string' && fresh.refresh_token.length > 0
-        ? fresh.refresh_token
-        : session.rt,
-      exp: Math.floor(Date.now() / 1000) + (fresh.expires_in ?? 300),
-    };
-    // le cap 12 h de encodeSession borne la vie de la session ré-encodée
-    return { status: 'renewée', claims, jwe: await encodeSession(claims) };
-  } catch {
-    return { status: 'expirée' };
+
+  // M-1 : un renouvellement tout frais (course gagnée par un pair) ?
+  const key = keyOf(jwe as string);
+  const hit = recent.get(key);
+  if (hit && Date.now() - hit.ts < ADOPTION_TTL_MS) {
+    return hit.result;
   }
+  // M-1 : un refresh déjà en vol pour ce même cookie ?
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+
+  const job = (async (): Promise<Ensured> => {
+    try {
+      const fresh = await refresh(session.rt as string);
+      if (typeof fresh.access_token !== 'string' || fresh.access_token.length === 0) {
+        return { status: 'expirée' };
+      }
+      const claims: SessionClaims = {
+        at: fresh.access_token,
+        rt: typeof fresh.refresh_token === 'string' && fresh.refresh_token.length > 0
+          ? fresh.refresh_token
+          : session.rt,
+        exp: Math.floor(Date.now() / 1000) + (fresh.expires_in ?? 300),
+      };
+      // le cap 12 h de encodeSession borne la vie de la session ré-encodée
+      const result: Ensured = {
+        status: 'renewée',
+        claims,
+        jwe: await encodeSession(claims),
+      };
+      recent.set(key, { ts: Date.now(), result });
+      return result;
+    } catch (e) {
+      // m-1 : 5xx/réseau KO ≠ mort ; seule la 4xx (invalid_grant) tue
+      if (e instanceof RefreshTransientError) {
+        return { status: 'transient', claims: session };
+      }
+      return { status: 'expirée' };
+    } finally {
+      inFlight.delete(key);
+    }
+  })();
+  inFlight.set(key, job);
+  return job;
 }

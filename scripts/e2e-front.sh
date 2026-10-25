@@ -82,13 +82,84 @@ jwtCount=$(echo "$liste" | grep -c "eyJ") || true
 [ "$jwtCount" = "0" ] || fail "token JWT VISIBLE dans le HTML client"
 echo "✓ document listé + aucun token exposé au client"
 
-# 6) logout → 302 KC logout + session détruite
-loc2=$(curl -s -D - -o /dev/null -H "Cookie: $session" "$WEB/logout" \
-  | grep -i "^location:" | sed 's/^[Ll]ocation:[[:space:]]*//' | tr -d '\r')
-echo "$loc2" | grep -q "/realms/alveare/protocol/openid-connect/logout" \
-  || fail "logout attendu vers KC, obtenu : $loc2"
-apres=$(curl -s "$WEB/")
-grep -q "Se connecter" <<<"$apres" || fail "après logout, page attendue anonyme"
-echo "✓ logout → page anonyme de nouveau"
+# 6) S1 : silent refresh par le MIDDLEWARE — colis : JWE forgé avec
+#    le VRAI at/rt de Keycloak, mais une at mourante (exp dans 10 s).
+#    Attendu : middleware → refresh réellement tenté auprès de KC →
+#    cookie de session RÉ-ENCODÉ (≠ celui envoyé) et la page /
+#    fonctionne avec le NOUVEAU at (profil visible).
+tok=$(curl -sf "$KC/protocol/openid-connect/token" \
+  -d grant_type=password -d client_id=web-admin -d scope=openid \
+  -d username=user@dev.local -d password="$ALV_USER_PASS")
+at=$(sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p' <<<"$tok")
+rt=$(sed -n 's/.*"refresh_token":"\([^"]*\)".*/\1/p' <<<"$tok")
+[ -n "$at" ] && [ -n "$rt" ] || fail "ROPC : tokens non obtenus"
+handler=$(cd "$ROOT/web/admin" && AT="$at" RT="$rt" node --input-type=module -e '
+import { EncryptJWT } from "jose";
+const key = Uint8Array.from(Buffer.from(process.env.SESSION_KEY, "hex"));
+const jwe = await new EncryptJWT({
+  at: process.env.AT, rt: process.env.RT,
+  exp: Math.floor(Date.now() / 1000) + 10,
+})
+  .setProtectedHeader({ alg: "dir", enc: "A256GCM" })
+  .setIssuedAt()
+  .setExpirationTime(Math.floor(Date.now() / 1000) + 10)
+  .encrypt(key);
+console.log(jwe);
+' 2>/dev/null) || fail "forge JWE (node+jose) échouée"
+renewed=$(curl -s -D - -o /tmp/page-s1.html -H "Cookie: alv_session=$handler" "$WEB/")
+grep -i "^set-cookie: alv_session=ey" <<<"$renewed" >/dev/null \
+  || fail "S1 : le middleware n'a PAS ré-encodé le cookie expirant"
+grep -q "user@dev.local" /tmp/page-s1.html \
+  || fail "S1 : page / KO après renew (nouvel at non fonctionnel)"
+echo "✓ S1 : JWE à at mourant → middleware ré-encode cookie + nouvel at fonctionnel"
 
-echo "E2E FRONT : OK (6 preuves)"
+# 7) S1 suite : refresh REFUSÉ par KC (rt invalide) → cookie DÉTRUIT
+    # (le middleware classe invalid_grant en mort de session)
+dying=$(cd "$ROOT/web/admin" && node --input-type=module -e '
+import { EncryptJWT } from "jose";
+const key = Uint8Array.from(Buffer.from(process.env.SESSION_KEY, "hex"));
+const jwe = await new EncryptJWT({
+  at: "AT_MORT", rt: "RT_INVALIDE_PAR_DESIGN",
+  exp: Math.floor(Date.now() / 1000) + 10,
+})
+  .setProtectedHeader({ alg: "dir", enc: "A256GCM" })
+  .setIssuedAt()
+  .setExpirationTime(Math.floor(Date.now() / 1000) + 10)
+  .encrypt(key);
+console.log(jwe);
+' 2>/dev/null) || fail "forge JWE (2) échouée"
+killed=$(curl -s -D - -o /dev/null -H "Cookie: alv_session=$dying" "$WEB/")
+grep -i '^set-cookie: alv_session=;' <<<"$killed" >/dev/null \
+  || fail "S1 : invalid_grant devrait DÉTRUIRE le cookie, obtenu : $(grep -i '^set-cookie' <<<"$killed" | head -1)"
+echo "✓ S1 : rt invalide → 'expirée' → cookie de session détruit par le middleware"
+
+# 8) GET /logout → 405 (S2 : plus de logout cliquable) + session intacte
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: $session" "$WEB/logout")
+[ "$code" = "405" ] || fail "GET /logout : attendu 405, obtenu $code"
+apres=$(curl -s -H "Cookie: $session" "$WEB/")
+grep -q "user@dev.local" <<<"$apres" || fail "405 logout : la session devrait rester intacte"
+echo "✓ GET /logout → 405, session intacte"
+
+# 7) POST /logout SANS Origin → 403 (anti-CSRF) + session intacte
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Cookie: $session" "$WEB/logout")
+[ "$code" = "403" ] || fail "POST /logout sans origin : attendu 403, obtenu $code"
+echo "✓ POST /logout sans Origin → 403"
+
+# 8) POST /logout AVEC Origin propre → 302 KC logout + cookie détruit
+lh=$(curl -s -D - -o /dev/null -X POST -H "Cookie: $session" -H "Origin: ${WEB}" "$WEB/logout" \
+  | grep -i "^location:" | sed 's/^[Ll]ocation:[[:space:]]*//' | tr -d '\r')
+echo "$lh" | grep -q "/realms/alveare/protocol/openid-connect/logout" \
+  || fail "logout attendu vers KC, obtenu : $lh"
+grep -i "^set-cookie:" <<<"$(curl -s -D - -o /dev/null -X POST -H "Cookie: $session" -H "Origin: ${WEB}" "$WEB/logout")" \
+  | grep -q 'alv_session=;' || fail "le cookie de session devrait être détruit"
+echo "✓ POST /logout (Origin ok) → KC end-session + session détruite"
+
+# 9) F-9 : callback depuis un host étranger → refus, SESSION non posée
+fh=$(curl -s -D - -o /dev/null "http://127.0.0.1:3001/callback?code=x&state=y")
+loc3=$(grep -i "^location:" <<<"$fh" | sed 's/^[Ll]ocation:[[:space:]]*//' | tr -d '\r')
+echo "$loc3" | grep -q ':3001/$' || fail "callback host étranger : attendu / sans session, obtenu $loc3"
+grep -i "^set-cookie:" <<<"$fh" | grep -q "alv_session=ey" \
+  && fail "callback host étranger ne doit PAS poser de session" || true
+echo "✓ /callback host étranger (127.0.0.1) → refus, aucune session"
+
+echo "E2E FRONT : OK (11 preuves)"
