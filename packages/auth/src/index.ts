@@ -83,6 +83,20 @@ export async function verifyToken(
   if (!azp || !ALLOWED_AZP.has(azp)) {
     throw new UnauthorizedException('client non autorisé');
   }
+  // Garde-mort e2e (revue T3.8 S-3) : le client « audit-e2e » existe
+  // UNIQUEMENT pour le e2e headless local (lecture admin :4030). En plus
+  // de l'extension azp DÉV (AUTH_E2E_CLIENTS), il est refusé tant que
+  // ALV_ALLOW_E2E n'est pas explicitement posé à « 1 » :
+  //   * cette variable n'existe JAMAIS en prod (aucun déploiement Infisical
+  //     ne la porte — c'est la garde contre un accident de config) ;
+  //   * le secret du client vit dans infra/.env (généré par
+  //     infra/mk-dotenv.sh, git-ignoré) — jamais le JSON du realm
+  //     versionné, jamais un realm de prod.
+  if (azp === 'audit-e2e' && process.env.ALV_ALLOW_E2E !== '1') {
+    throw new UnauthorizedException(
+      'client e2e non autorisé hors environnement de test',
+    );
+  }
   if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
     throw new UnauthorizedException('sujet manquant');
   }

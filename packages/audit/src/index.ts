@@ -58,8 +58,9 @@ type OutboxReturningRow = { id: bigint | number };
  *                ouverte par l'émetteur — ni begin, ni commit, jamais.
  * @param entries une entrée ou un lot d'entrées d'audit.
  * @returns les ids outbox créés, dans l'ordre d'entrée.
- * @throws  ZodError si une entrée est invalide (levant AVANT le SQL :
- *          aucune écriture partielle contestable).
+ * @throws  ZodError si une entrée est invalide (prévalidation du lot
+ *          COMPLET avant la boucle SQL : aucune écriture partielle
+ *          contestable).
  */
 export async function auditOutbox(
   client: AuditRawClient,
@@ -72,12 +73,15 @@ export async function auditOutbox(
     );
   }
   const list = Array.isArray(entries) ? entries : [entries];
+
+  // D-4 (revue T3.8) : TOUT le lot est prévalidé AVANT la boucle SQL —
+  // une entrée invalide (même en fin de lot) lève AVANT le premier
+  // INSERT : un lot invalide ne peut pas laisser une écriture partielle
+  // derrière lui.
+  const parsedEntries = list.map((entry) => AuditEntrySchema.parse(entry));
   const outboxIds: number[] = [];
 
-  for (const entry of list) {
-    // Validation stricte AVANT toute écriture SQL.
-    const parsed = AuditEntrySchema.parse(entry);
-
+  for (const parsed of parsedEntries) {
     const payload = {
       actor: parsed.actor,
       action: parsed.action,

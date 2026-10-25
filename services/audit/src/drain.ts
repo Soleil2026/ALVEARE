@@ -6,13 +6,24 @@
  * sans Nest ni Redis ni BD réelle) — `main.ts` ne fait que le brancher
  * sur une transaction Prisma et une queue BullMQ.
  *
- * Invariants (plan E3 §2 / T3.4) :
+ * Invariants (plan E3 §2 / T3.4, correctifs revue T3.8) :
  *   * un lot = une transaction : SELECT … WHERE delivered = false
- *     ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED, puis insertion
- *     partitionnée idempotente INSERT … ON CONFLICT (outbox_id, at)
- *     DO NOTHING, puis delivered=true pour les lignes traitées et
- *     attempts++ pour les lignes en échec (SAVEPOINT par ligne : une
- *     ligne réfractaire n'empoisonne pas le lot) ;
+ *     AND attempts < plafond ORDER BY id LIMIT 100 FOR UPDATE SKIP
+ *     LOCKED, puis insertion partitionnée idempotente INSERT …
+ *     ON CONFLICT (outbox_id, at) DO NOTHING, puis delivered=true pour
+ *     les lignes traitées et attempts++ pour les lignes en échec
+ *     (SAVEPOINT par ligne : une ligne réfractaire n'empoisonne pas le
+ *     lot) ;
+ *   * quarantaine (S-2 revue T3.8) : après le lot, les lignes encore
+ *     NON livrées et réfractaires trop de fois (attempts >= cap, env
+ *     AUDIT_ATTEMPTS_CAP, défaut 5) passent EN DEAD-LETTER
+ *     (audit.outbox_deadletter) puis sortent du outbox dans la MÊME
+ *     transaction — jamais silencieux (log structuré), jamais
+ *     re-sélectionnées ensuite ; le drain reste ainsi sain même avec
+ *     une ligne empoisonnée.
+ *     Garde SQL : énoncés DISTINCTS pour la quarantaine — une CTE qui
+ *     lirait un INSERT/UPDATE du même énoncé ne le verrait jamais
+ *     (piège de snapshot PostgreSQL, cf. @alveare/audit).
  *   * le routage de partition est automatique : la valeur `at`
  *     (payload.at sinon created_at de l'outbox) place la ligne dans la
  *     partition mensuelle correspondant à son mois — cf. migration
@@ -48,9 +59,17 @@ export interface DrainStats {
   inserted: number;
   deduped: number;
   failed: number;
+  /** Lignes déplacées en dead-letter durant ce lot (S-2 revue T3.8). */
+  quarantined: number;
 }
 
-export const ZERO_STATS: DrainStats = { scanned: 0, inserted: 0, deduped: 0, failed: 0 };
+export const ZERO_STATS: DrainStats = {
+  scanned: 0,
+  inserted: 0,
+  deduped: 0,
+  failed: 0,
+  quarantined: 0,
+};
 
 export function addStats(a: DrainStats, b: DrainStats): DrainStats {
   return {
@@ -58,6 +77,7 @@ export function addStats(a: DrainStats, b: DrainStats): DrainStats {
     inserted: a.inserted + b.inserted,
     deduped: a.deduped + b.deduped,
     failed: a.failed + b.failed,
+    quarantined: a.quarantined + b.quarantined,
   };
 }
 
@@ -76,21 +96,103 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 }
 
 /**
+ * Plafond de tentatives (revue T3.8 S-2) : une ligne encore livrée
+ * (delivered = false) avec attempts >= cap quitte le outbox pour la
+ * dead-letter au sweep suivant. Env `AUDIT_ATTEMPTS_CAP` : entier
+ * STRICTEMENT POSITIF (garde : un cap nul viderait le outbox au
+ * premier sweep) ; valeur absente ou invalide → défaut 5. Aucune
+ * valeur <= 0 n'est possible par construction.
+ */
+export function attemptsCap(): number {
+  const raw = process.env.AUDIT_ATTEMPTS_CAP;
+  // Number() (et pas parseInt : « 1.5 » tronqué serait accepté) —
+  // l'entier STRICTEMENT POSITIF est le seul format retenu.
+  const parsed = raw === undefined || raw.trim() === '' ? Number.NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 5;
+}
+
+/** Raison tracée dans audit.outbox_deadletter.error (grep du runbook : 
+ * cf. docs/ops-audit.md). */
+export const QUARANTINE_REASON = 'plafond de tentatives atteint';
+
+/**
+ * Passe de QUARANTAINE (S-2) — énoncés SÉPARÉS (jamais de CTE qui lirait
+ * un INSERT du même énoncé : piège de snapshot), DANS la transaction du
+ * lot. Une ligne encore NON livrée (delivered = false) et réfractaire
+ * trop de fois (attempts >= cap) est copiée TELLE QUEL en
+ * audit.outbox_deadletter
+ * (payload, attempts, raison) PUIS supprimée du outbox : elle n'est
+ * plus jamais re-sélectionnée, un lot suivant n'est plus empoisonné,
+ * et la trace reste consultable pour réparation humaine.
+ *
+ * @returns le nombre de lignes mises en quarantaine.
+ */
+export async function quarantineExhausted(
+  tx: DrainRawClient,
+  cap: number,
+): Promise<number> {
+  const rows = await tx.$queryRaw<{ id: unknown; attempts: unknown; payload: unknown }>`
+    SELECT id, attempts, payload
+    FROM audit.outbox
+    WHERE delivered = false
+      AND attempts >= ${cap}
+    ORDER BY id
+    LIMIT ${DRAIN_BATCH_SIZE}
+    FOR UPDATE SKIP LOCKED`;
+
+  for (const row of rows) {
+    const id = Number(row.id);
+    if (!Number.isSafeInteger(id) || id < 0) {
+      // id non représentable en number : ligne non adressable —
+      // signalée (jamais silencieux) mais pas copiable en dead-letter.
+      console.error(
+        'audit drain : quarantaine impossible, id outbox non représentable',
+      );
+      continue;
+    }
+    // Payload copié TEL QUEL (aucune revalidation : c'est justement une
+    // ligne qui a résisté au parse) ; jsonb arrive en string ou objet
+    // selon le pilote — tout est repris tel quel côté BD.
+    const payloadStr =
+      typeof row.payload === 'string'
+        ? row.payload
+        : JSON.stringify(row.payload ?? null);
+    await tx.$executeRaw`INSERT INTO audit.outbox_deadletter (id, attempts, payload, error)
+      VALUES (${id}::bigint, ${Number(row.attempts)}::int, ${payloadStr}::jsonb, ${QUARANTINE_REASON})`;
+    await tx.$executeRaw`DELETE FROM audit.outbox WHERE id = ${id}::bigint`;
+  }
+
+  if (rows.length > 0) {
+    console.error(
+      `audit drain : quarantaine de ${rows.length} ligne(s) réfractaire(s) (attempts>=${cap})`,
+    );
+  }
+  return rows.length;
+}
+
+/**
  * Traite UN lot dans la transaction ouverte par l'appelant (Prisma
  * `$transaction` : BEGIN/COMMIT gérés par Prisma, jamais ici).
  *
  * @returns le compte du lot : `inserted` = lignes réellement écrites,
  *   `deduped` = lignes déjà présentes dans audit.events (conflit
  *   (outbox_id, at) — idempotence), `failed` = lignes réfractaires
- *   (attempts++ enregistré, retry au sweep suivant).
+ *   (attempts++ enregistré, retry au sweep suivant), `quarantined` =
+ *   lignes déplacées en dead-letter (rare et jamais muet).
  */
 export async function drainBatch(tx: DrainRawClient): Promise<DrainStats> {
+  // Plafond de tentatives : les lignes déjà trop réfractaires ne sont
+  // même PAS sélectionnées (pas de retry infini) — elles passent en
+  // quarantaine en fin de lot (cf. quarantineExhausted).
+  const cap = attemptsCap();
+
   // 1) LOT VERROUILLÉ : SKIP LOCKED = plusieurs workers peuvent
   //    sweeper en parallèle sans se disputer une même ligne.
   const rows = await tx.$queryRaw<OutboxRow>`
     SELECT id, created_at, payload
     FROM audit.outbox
     WHERE delivered = false
+      AND attempts < ${cap}
     ORDER BY id
     LIMIT ${DRAIN_BATCH_SIZE}
     FOR UPDATE SKIP LOCKED`;
@@ -138,6 +240,11 @@ export async function drainBatch(tx: DrainRawClient): Promise<DrainStats> {
   for (const id of processedIds) {
     await tx.$executeRaw`UPDATE audit.outbox SET delivered = true WHERE id = ${id}`;
   }
+
+  // 3) Quarantaine (S-2) : les lignes réfractaires tentées jusqu'au
+  //    plafond sortent du outbox et partent en dead-letter — DANS LA
+  //    MÊME transaction (tout le lot, ou rien).
+  stats.quarantined = await quarantineExhausted(tx, cap);
 
   return stats;
 }

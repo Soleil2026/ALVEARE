@@ -147,3 +147,62 @@ T3.6 → T3.7 → T3.8 → T3.9.
 - [ ] `scripts/e2e-audit.sh` vert suite complète
 - [ ] revue indépendante signée : 0 MAJEUR non remédié
 - [ ] accord opérateur final avant commit de clôture
+
+## 10. Déviations acceptées & correctifs T3.8 (2026-10-25)
+
+Suite à la revue indépendante de T3.8 (signature S-1..S-3, D-1..D-6,
+R-1/R-2, C-1), les écarts suivants entre le plan et ce qui a été
+construit sont validés par l'opérateur :
+
+1. **Flag `AUDIT_PIPELINE` (§8.4) écarté.** La bascule des émetteurs
+   vers le outbox s'est faite directement (basculer = émettre
+   `auditOutbox` dans la transaction métier). L'ancien chemin synchrone
+   n'existe plus côté code : sa **garantie d'atomicité** est conservée
+   par construction (l'audit vit désormais dans la transaction métier
+   elle-même, plus forte que l'ancienne). Aucune double écriture
+   transitoire.
+2. **Latence de drain : ≤ 30 s (sweep) en attendant le branchement du
+   signal.** Le §9 promettait « < 2 s (via job) » pour l'épreuve
+   d'upload→lisible : le job signal (`signalDrain`, paquet
+   `@alveare/audit`) est prêt et testé, mais les trois émetteurs ne
+   l'enfilent pas encore (branchement prévu en tâche suivante). La
+   latence effective observable est celle du sweep : ≤ 30 s.
+   L'idempotence, elle, ne dépend pas du déclencheur (testée sur deux
+   sweeps naturels).
+3. **Correctifs de la revue appliqués au service audit :**
+   - **S-1 (partitions futures)** — le script de maintenance crée les
+     partitions manquantes de la fenêtre [courant − 1 .. courant + 2]
+     AVANT tout décapage, avec mode `--check` (exit 0/1, utilisé par
+     l'e2e). Fenêtre de création alignée sur la fenêtre de contrôle
+     (auto-réparation d'une partition passée manquante) — écart
+     par rapport à la consigne initiale « [courant .. courant + 2] » :
+     un `--check` exigeant [courant − 1 ..] sans création du mois − 1
+     serait irrattrapable sur une BD fraîche.
+   - **S-2 (quarantaine)** — plafond `AUDIT_ATTEMPTS_CAP` (défaut 5) ;
+     une ligne livrée et réfractaire au-delà du plafond part en
+     dead-letter (`audit.outbox_deadletter`, migration 003) et sort du
+     outbox dans la même transaction, log structuré non muet ; le
+     drain préfère s'arrêter proprement au lieu de re-scanner à
+     l'infini une ligne empoisonnée.
+   - **S-3 (client e2e confiné)** — le realm JSON versionné ne contient
+     plus de secret ; `AUDIT_E2E_SECRET` vit dans `infra/.env`
+     (généré, git-ignoré) et est posé sur le client par `seed-dev.sh`.
+     Garde-mort dans `@alveare/auth` : azp `audit-e2e` est refusé tant
+     que `ALV_ALLOW_E2E` ≠ « 1 » (la variable n'existe jamais en prod).
+4. **Taxonomie de la lecture (R-2).** Un curseur illisible est une
+   erreur **client (400)**, détectée AVANT la requête ; tout autre
+   échec (SQL/BD) répond **500** avec trace serveur — jamais masqué en
+   400.
+5. **Index `at` ajouté (D-3).** L'index `(at DESC, id DESC)` couvre le
+   sujet FR-03.3 (tri + pagination par curseur) ; il est créé par la
+   migration 005, nommage suivant la convention 002 (`events_at_idx`,
+   comme `events_actor_idx`).
+6. **Secrets e2e → env (D-6, suite S-3).** `AUDIT_E2E_SECRET` et
+   `AUDIT_ATTEMPTS_CAP` sont générés dans `infra/.env` ET le `.env`
+   racine (même valeur, une seule génération) par `infra/mk-dotenv.sh` ;
+   `.env.example` fait foi comme gabarit sans valeurs.
+7. **Coût du outbox (D-2).** La purge de l'outbox livré est
+   disponible (`--purge-outbox N` du script de maintenance) mais
+   DÉSACTIVÉE par défaut, et JAMAIS appliquée à `audit.events` : la
+   rétention d'audit reste celle du §3 (12 mois glissants, detach +
+   drop vide seulement, décision humaine sur non-vide).

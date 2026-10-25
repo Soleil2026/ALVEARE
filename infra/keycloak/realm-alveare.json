@@ -50,7 +50,6 @@
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": true,
-      "secret": "audit-e2e-dev-secret",
       "defaultClientScopes": [
         "profile",
         "email",

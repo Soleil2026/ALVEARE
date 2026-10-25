@@ -55,12 +55,13 @@ token_user=$(curl -s -X POST "$KC/protocol/openid-connect/token" \
 # Token admin (E3) : compte de service du client e2e « audit-e2e »
 # (client_credentials, rôle admin posé par seed-dev.sh — MFA sans objet :
 # ce client n'est pas interactif ; les vrais admins gardent MFA obligatoire,
-# cf. realm requiredActions CONFIGURE_TOTP). Secret DÉV dans le realm seed,
-# jamais utilisé hors environnement local.
-AUDIT_E2E_SECRET=$(python3 -c "
-import json
-r=json.load(open('$ROOT/infra/keycloak/realm-alveare.json'))
-print(next(c['secret'] for c in r.get('clients',[]) if c.get('clientId')=='audit-e2e'))")
+# cf. realm requiredActions CONFIGURE_TOTP). Secret DÉV : il N'EST PLUS
+# dans le JSON du realm versionné (revue T3.8 S-3) — il vit dans
+# infra/.env (généré par infra/mk-dotenv.sh, git-ignoré) et est posé sur
+# le client par seed-dev.sh. Garde-mort côté services : ALV_ALLOW_E2E=1
+# requis (voir @alveare/auth).
+AUDIT_E2E_SECRET="${AUDIT_E2E_SECRET:-}"
+[ -n "$AUDIT_E2E_SECRET" ] || fail "AUDIT_E2E_SECRET absente (infra/.env — bash infra/mk-dotenv.sh)"
 token_admin=$(curl -s -X POST "$KC/protocol/openid-connect/token" \
   -d grant_type=client_credentials -d client_id=audit-e2e \
   -d "client_secret=$AUDIT_E2E_SECRET" \
@@ -132,10 +133,62 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "$AUDIT/admin/audit")
 [ "$code" = "401" ] || fail "admin API sans token : attendu 401, obtenu $code"
 echo "✓ GET /admin/audit gardé : user simple → 403, sans token → 401"
 
-# 10) rotate partitions : dry-run sans partition candidate → exit 0
-bash "$ROOT/infra/rotate-audit-partitions.sh" \
-  "postgresql://alveare_core_app:$DBPASS@localhost:5432/alveare_core" >/dev/null 2>&1 \
+# 10) maintenance partitions (revue T3.8 S-1) : la rotation crée
+#     d'abord les partitions manquantes de la fenêtre [courant-1..courant+2]
+#     (auto-réparation), puis --check doit passer (exit 0).
+bash "$ROOT/infra/audit-migrations/rotate-audit-partitions.sh" \
+  "postgresql://alveare_core_app:$DBPASS@localhost:5432/alveare_core" \
   || fail "rotate-audit-partitions : exit non nul"
-echo "✓ rotate partitions : no-op exit 0 (12 mois courants conservés)"
+bash "$ROOT/infra/audit-migrations/rotate-audit-partitions.sh" --check \
+  "postgresql://alveare_core_app:$DBPASS@localhost:5432/alveare_core" \
+  || fail "rotate-audit-partitions --check : fenêtre de partitions incomplète"
+echo "✓ maintenance partitions : rotation passée puis --check exit 0 (fenêtre [courant-1..courant+2] complète)"
 
-echo "E2E AUDIT : OK (10 preuves)"
+# 11) couverture de partitions : au moins 12 partitions raccordées à la
+#     table mère (rétention 12 mois + fenêtre future créée continûment).
+n_parts=$(psqlq "SELECT count(*) FROM pg_inherits WHERE inhparent = 'audit.events'::regclass")
+[ "${n_parts:-0}" -ge 12 ] || fail "partitions : $n_parts < 12 raccordées à audit.events"
+echo "✓ partitions raccordées : $n_parts (≥ 12 attendues)"
+
+# 12) quarantaine (revue T3.8 S-2) : une ligne factice INDRAINABLE
+#     (payload JSONB valide mais non conforme AuditEntry) est insérée
+#     avec attempts = plafond → le drain ne la re-sélectionne PAS et la
+#     passe en dead-letter (timeout généreux : sweeps de 30 s).
+cap="${AUDIT_ATTEMPTS_CAP:-5}"
+poison_id=$(psqlq "INSERT INTO audit.outbox (payload, attempts)
+  VALUES ('{\"action\":\"__poison__\"}'::jsonb, ${cap})
+  RETURNING id" | head -n1)
+[ -n "$poison_id" ] || fail "quarantaine : insertion de la ligne empoisonnée ratée"
+gone=0
+for _ in $(seq 1 30); do
+  [ "$(psqlq "SELECT count(*) FROM audit.outbox WHERE id = ${poison_id}")" = "0" ] && { gone=1; break; }
+  sleep 3
+done
+[ "$gone" = "1" ] || fail "quarantaine : ligne $poison_id toujours dans audit.outbox après 90 s"
+dead=$(psqlq "SELECT count(*) FROM audit.outbox_deadletter
+  WHERE id = ${poison_id}
+    AND payload->>'action' = '__poison__'
+    AND attempts = ${cap}
+    AND error LIKE '%plafond de tentatives atteint%'")
+[ "${dead:-0}" = "1" ] || fail "quarantaine : ligne $poison_id absente ou non conforme en audit.outbox_deadletter"
+echo "✓ quarantaine : ligne $poison_id (attempts=$cap) passée en outbox_deadletter (payload + attempts + raison) et sortie du outbox"
+
+# 13) le drain reste en bonne santé après quarantaine : une ligne
+#     fraîche posée DIRECTEMENT dans le outbox (payload conforme
+#     AuditEntry, pas de service impliqué) est drainée normalement.
+probe_id=$(psqlq "INSERT INTO audit.outbox (payload) VALUES (
+  '{\"actor\":\"e2e-probe\",\"action\":\"e2e.quarantine-probe\",\"target\":\"probe\"}'::jsonb)
+  RETURNING id" | head -n1)
+[ -n "$probe_id" ] || fail "sonde : insertion ratée"
+probe_delivered=0
+for _ in $(seq 1 20); do
+  d=$(psqlq "SELECT delivered FROM audit.outbox WHERE id = ${probe_id}")
+  [ "$d" = "t" ] && { probe_delivered=1; break; }
+  sleep 2
+done
+[ "$probe_delivered" = "1" ] || fail "sonde $probe_id : pas drainée après 40 s (drain empoisonné par la quarantaine ?)"
+probe_ev=$(psqlq "SELECT count(*) FROM audit.events WHERE action = 'e2e.quarantine-probe' AND outbox_id = ${probe_id}")
+[ "${probe_ev:-0}" = "1" ] || fail "sonde $probe_id : livrée mais absente de audit.events"
+echo "✓ drain en bonne santé : sonde $probe_id livrée et écrite dans audit.events après quarantaine"
+
+echo "E2E AUDIT : OK (13 preuves)"

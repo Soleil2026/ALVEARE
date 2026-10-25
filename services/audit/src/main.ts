@@ -52,6 +52,7 @@ import {
 import {
   buildAuditListSql,
   clampLimit,
+  decodeCursor,
   encodeCursor,
   parseAuditQuery,
   type AuditListRow,
@@ -217,14 +218,29 @@ class AdminAuditController {
       throw new HttpException(parsed.error, 400);
     }
 
+    // R-2 / F-8 (revue T3.8) : deux échecs de nature différente —
+    //   * un curseur ILLISIBLE est une erreur CLIENT (400) : elle est
+    //     détectée AVANT la requête, jamais en masquant un échec BD ;
+    //   * tout autre échec (SQL, indisponibilité…) est un échec SERVEUR :
+    //     il remonte tel quel (Nest → 500 par défaut) avec une trace
+    //     serveur concise — on ne le transforme JAMAIS en 400.
+    if (
+      parsed.query.cursor !== undefined &&
+      decodeCursor(parsed.query.cursor) === null
+    ) {
+      throw new HttpException('curseur illisible', 400);
+    }
+
     let rows: AuditListRow[];
     try {
       rows = await this.prisma.$queryRaw<AuditListRow[]>(
         buildAuditListSql(parsed.query),
       );
-    } catch {
-      // Curseur illisible détecté par le builder → 400 explicite.
-      throw new HttpException('curseur illisible', 400);
+    } catch (err) {
+      // Échec BD non nommé : log serveur (diagnostic) puis remontée
+      // brute — Nest répond 500, l'erreur reste visible côté logs.
+      console.error(`audit lecture : échec BD de GET /admin/audit : ${String(err)}`);
+      throw err;
     }
 
     const limit = clampLimit(parsed.query.limit);

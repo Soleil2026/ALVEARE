@@ -118,8 +118,15 @@ describe('auditOutbox — forme du payload', () => {
     await expect(
       auditOutbox(tx, tx, [{ actor: 'user-1', action: '' }]),
     ).rejects.toThrow();
-    // refactor de garantie : un lot invalide ne peut pas laisser
-    // quelques INSERT derrière lui (validation AVANT la boucle SQL)
+    // Garantie D-4 (revue T3.8) : le lot COMPLET est prévalidé AVANT la
+    // boucle SQL — une entrée invalide, même en fin de lot, n'écrit
+    // RIEN, même si les entrées précédentes sont valables.
+    await expect(
+      auditOutbox(tx, tx, [
+        { actor: 'user-1', action: 'share.grant' },
+        { actor: '', action: 'login' },
+      ]),
+    ).rejects.toThrow();
     expect(calls).toHaveLength(0);
   });
 

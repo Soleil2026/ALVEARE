@@ -8,6 +8,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 gen() { openssl rand -hex 16; }
 
+# E3 audit (revue T3.8 S-3) : secret du client e2e « audit-e2e », généré
+# UNE fois puis écrit au MÊME format dans infra/.env (compose →
+# seed-dev) et dans le .env racine (e2e, lecture directe). Rien ne vit
+# dans un fichier versionné.
+AUDIT_E2E_SECRET="$(gen)"
+
 # --- infra/.env (compose keycloak) ---
 if [ ! -f "$ROOT/infra/.env" ]; then
   cat > "$ROOT/infra/.env" <<EOF
@@ -15,6 +21,10 @@ KC_BOOTSTRAP_ADMIN_USERNAME=admin
 KC_BOOTSTRAP_ADMIN_PASSWORD=admin-dev
 ALV_ADMIN_PASS=$(gen)
 ALV_USER_PASS=$(gen)
+# E3 audit : secret du client e2e audit-e2e (posé sur le client par
+# seed-dev.sh) + plafond de tentatives du drain (quarantaine, DÉV).
+AUDIT_E2E_SECRET=$AUDIT_E2E_SECRET
+AUDIT_ATTEMPTS_CAP=${AUDIT_ATTEMPTS_CAP:-5}
 EOF
   echo "infra/.env : écrit"
 else
@@ -42,6 +52,15 @@ DOCUMENTS_URL=http://localhost:4010
 REDIRECT_URI=http://localhost:3001/callback
 # E3 audit (worker BullMQ) — Redis du compose infra/ :6379, DB 0
 REDIS_URL=redis://localhost:6379/0
+# E3 audit (revue T3.8 S-3 / D-6) : client e2e confiné — secret
+# identique à infra/.env (e2e-audit.sh le lit là-bas) et plafond de
+# quarantaine du drain. Les deux variables DÉV suivantes n'existent
+# JAMAIS en prod : aucun realm de prod ne connaît le client audit-e2e,
+# et ALV_ALLOW_E2E n'est jamais posé hors e2e.
+AUDIT_E2E_SECRET=$AUDIT_E2E_SECRET
+AUDIT_ATTEMPTS_CAP=${AUDIT_ATTEMPTS_CAP:-5}
+AUTH_E2E_CLIENTS=audit-e2e
+ALV_ALLOW_E2E=1
 EOF
   echo ".env racine : écrit"
 else
@@ -54,6 +73,29 @@ if ! grep -q '^REDIS_URL=' "$ROOT/.env"; then
   printf 'REDIS_URL=redis://localhost:6379/0\n' >> "$ROOT/.env"
   echo ".env : REDIS_URL ajoutée (E3 audit)"
 fi
+
+# E3 audit (revue T3.8 S-3/D-6) : append idempotent des variables
+# d'audit absentes sur des installations déjà générées. Le secret est
+# écrit au même format dans infra/.env et le .env racine (une seule
+# chance de le générer : si une seule des deux clés existe déjà, la
+# valeur préexistante GAGNE partout — jamais deux secrets différents).
+if grep -q '^AUDIT_E2E_SECRET=' "$ROOT/infra/.env" || grep -q '^AUDIT_E2E_SECRET=' "$ROOT/.env"; then
+  AUDIT_E2E_SECRET="$(sed -n 's/^AUDIT_E2E_SECRET=//p' "$ROOT/infra/.env" "$ROOT/.env" 2>/dev/null | sed -n '1p')"
+fi
+add_kv() { # add_kv <fichier> <clé> <valeur> — append si la clé est absente
+  local file="$1" key="$2" value="$3"
+  if grep -q "^${key}=" "$file"; then return 0; fi
+  printf '%s=%s\n' "$key" "$value" >> "$file"
+  echo "$file : $key ajoutée (E3 audit)"
+}
+add_kv "$ROOT/infra/.env" 'AUDIT_E2E_SECRET' "$AUDIT_E2E_SECRET"
+add_kv "$ROOT/infra/.env" 'AUDIT_ATTEMPTS_CAP' "${AUDIT_ATTEMPTS_CAP:-5}"
+add_kv "$ROOT/.env" 'AUDIT_E2E_SECRET' "$AUDIT_E2E_SECRET"
+add_kv "$ROOT/.env" 'AUDIT_ATTEMPTS_CAP' "${AUDIT_ATTEMPTS_CAP:-5}"
+# Extension azp DÉV uniquement + garde-mort e2e (jamais en prod :
+# aucun autre fichier versionné ne référence ces deux valeurs).
+add_kv "$ROOT/.env" 'AUTH_E2E_CLIENTS' 'audit-e2e'
+add_kv "$ROOT/.env" 'ALV_ALLOW_E2E' '1'
 
 # --- .env.runtime (E1, PgBouncer) ---
 # Utilisé par les services applicatifs au runtime (node --env-file).

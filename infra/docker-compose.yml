@@ -11,6 +11,10 @@ services:
       KC_HEALTH_ENABLED: "true"
       ALV_ADMIN_PASS: ${ALV_ADMIN_PASS}
       ALV_USER_PASS: ${ALV_USER_PASS}
+      # E3 audit (revue T3.8 S-3) : le secret du client e2e arrive à
+      # seed-dev.sh (kcadm update clients/:id -s secret=…) — jamais dans
+      # le realm JSON versionné.
+      AUDIT_E2E_SECRET: ${AUDIT_E2E_SECRET:?infra/.env requis}
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
     ports:
