@@ -757,33 +757,55 @@ class PaymentsController {
     }
 
     // 3) created → pending + provider_ref (transition légale gardée).
-    const current = row; // vue figée du flux (row reste étroit dans les closures)
+    const current = row; // vue figée du flux
+    const fin = await this.settleAfterCheckout(current, co, 'race_apply', false);
+    return { payment: viewFromRow(fin.fin), redirect_url: fin.redirectUrl, deduped: fin.deduped };
+  }
+
+  /**
+   * Post-checkout commun (create + resume D-2) : created → pending
+   * via la garde atomique de la machine à états. Garde de course
+   * (re-revue delta, BLOQUANT) : l'URL du checkout n'est rendue QUE si
+   * c'est NOTRE provider_ref qui a gagné — une session PSP perdue
+   * n'est jamais référencée en BD ; son URL ne doit JAMAIS atteindre
+   * l'app (une session orpheline encaissable = argent non
+   * rapprochable). Le perdant reste inoffensif (session jamais citée,
+   * expire côté PSP) ; l'app consulte la ligne et l'url du gagnant.
+   */
+  private async settleAfterCheckout(
+    row: store.TxnRow,
+    co: { providerRef: string; redirectUrl: string },
+    raceEvent: 'race_apply' | 'race_resume',
+    dedupedWhenWon: boolean,
+  ): Promise<{ fin: store.TxnRow; redirectUrl: string | null; deduped: boolean }> {
+    let spent = 0;
     await this.prisma.$transaction(async (tx) => {
-      const spent = await store.applyStatus(
+      spent = await store.applyStatus(
         tx as unknown as SqlTx,
-        current.id,
+        row.id,
         'created',
         'pending',
         { providerRef: co.providerRef },
       );
-      if (spent !== 1) {
-        // Un flux concurrent a déjà piloté la ligne : pas d'échec.
-        console.warn(
-          JSON.stringify({
-            at: new Date().toISOString(),
-            component: 'payments-create',
-            event: 'race_apply',
-            payment_id: current.id,
-          }),
-        );
-      }
     });
-
-    row = (await store.getTxnById(this.prisma, current.id)) ?? row;
+    const fin = (await store.getTxnById(this.prisma, row.id)) ?? row;
+    if (spent === 1) {
+      return { fin, redirectUrl: co.redirectUrl, deduped: dedupedWhenWon };
+    }
+    // Course perdue : un flux concurrent a piloté la ligne.
+    console.warn(
+      JSON.stringify({
+        at: new Date().toISOString(),
+        component: 'payments-create',
+        event: raceEvent,
+        payment_id: row.id,
+      }),
+    );
+    const ours = fin.status === 'pending' && fin.provider_ref === co.providerRef;
     return {
-      payment: viewFromRow(row),
-      redirect_url: co.redirectUrl,
-      deduped: false,
+      fin,
+      redirectUrl: ours ? co.redirectUrl : null,
+      deduped: !ours,
     };
   }
 
@@ -816,27 +838,12 @@ class PaymentsController {
       await this.worker.applyRemoteStatus(row, 'failed', 'create-fail');
       throw new HttpException('création du paiement impossible', 502);
     }
-    await this.prisma.$transaction(async (tx) => {
-      const spent = await store.applyStatus(
-        tx as unknown as SqlTx,
-        row.id,
-        'created',
-        'pending',
-        { providerRef: co.providerRef },
-      );
-      if (spent !== 1) {
-        console.warn(
-          JSON.stringify({
-            at: new Date().toISOString(),
-            component: 'payments-create',
-            event: 'race_resume',
-            payment_id: row.id,
-          }),
-        );
-      }
-    });
-    const fin = (await store.getTxnById(this.prisma, row.id)) ?? row;
-    return { payment: viewFromRow(fin), redirect_url: co.redirectUrl, deduped: true };
+    const settled = await this.settleAfterCheckout(row, co, 'race_resume', true);
+    return {
+      payment: viewFromRow(settled.fin),
+      redirect_url: settled.redirectUrl,
+      deduped: settled.deduped,
+    };
   }
 
   /** GET /payments/:id — app propriétaire OU admin (plan §4). */
@@ -1119,9 +1126,17 @@ class PaymentsController {
       };
       });
     } catch (err) {
-      // D-3 : doublon event_uid concurrent → 409 structuré (le reste
-      // des erreurs remonte tel quel).
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      // D-3 (re-revue delta) : le SQL brut ($executeRaw) ne remonte
+      // JAMAIS en P2002 mais en P2010 « Raw query failed », code pg
+      // dans le message. Seul le conflit d'unicité event_uid sur
+      // transactions est doublon PSP → 409 ; les autres erreurs
+      // remontent tel quel.
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2010' &&
+        err.message.includes('23505') &&
+        err.message.includes('transactions_event_uid_key')
+      ) {
         throw new HttpException('event_uid déjà consommé (doublon PSP)', 409);
       }
       throw err;

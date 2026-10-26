@@ -46,6 +46,9 @@ describe('fabrique makePaymentProvider (boot strict)', () => {
   afterEach(() => {
     if (original === undefined) delete process.env.PAYMENTS_PROVIDER;
     else process.env.PAYMENTS_PROVIDER = original;
+    // (re-revue delta) : unstubAllEnvs restaure AUSSI NODE_ENV déclaré
+    // par stubEnv dans le test fabrique production.
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
