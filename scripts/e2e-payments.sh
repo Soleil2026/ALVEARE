@@ -62,6 +62,12 @@ curl -sf "$PAY/healthz" >/dev/null 2>&1 \
   echo "ALV_ALLOW_E2E=1"
 } > "$DIR/service.env"
 
+# node --env-file : l'env RÉEL prime sur le fichier — désécrire les
+# clés que service.env doit surcharger (précédence explicite, jamais
+# supposée).
+unset PAYMENTS_PORT PAYMENTS_PROVIDER PAYMENTS_TTL_SECONDS \
+      PAYMENTS_WEBHOOK_ATTEMPTS_CAP PAYMENTS_DEV_OUTBOX ALV_ALLOW_E2E
+
 (cd "$ROOT" && pnpm --filter @alveare/payments-service run build) \
   || fail "build service paiements KO"
 (cd "$ROOT/services/payments" \
