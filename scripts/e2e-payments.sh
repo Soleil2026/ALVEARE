@@ -237,7 +237,10 @@ n_refund=$(psqlq "SELECT count(*) FROM payments.refunds WHERE txn_id='${id}' AND
 [ "${n_refund:-0}" = "1" ] || fail "refunds : $n_refund ligne(s) pour refund_ref rejoué"
 n_open=$(psqlq "SELECT count(DISTINCT status) FROM payments.transactions WHERE id='${id}'")
 [ "${n_open:-0}" = "1" ] || fail "état transaction pas cohérent après refund"
-echo "✓ P5 refund partiel idempotent (double appel → 1 ligne refunded=$n_refund)"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $token_user" \
+  -H 'Content-Type: application/json' -d "$refund_body" "$PAY/payments/$id/refund")
+[ "$code" = "403" ] || fail "refund par user simple : attendu 403 (Q-A/D-7), obtenu $code"
+echo "✓ P5 refund partiel idempotent (double appel → 1 ligne refunded=$n_refund) + refund non-admin refusé 403 (D-7)"
 
 # ---------------------------------------------------------------------
 # P6) refund au-delà du plafond (> payé − déjà remboursé) → 400

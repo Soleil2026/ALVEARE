@@ -853,14 +853,21 @@ class PaymentsController {
   }
 
   /**
-   * POST /payments/:id/refund — plafond (≤ payé − déjà remboursé) +
+   * POST /payments/:id/refund — «admin Core seulement» (porte Q-A,
+   * revue D-7) : l'argent ne se rapatrie pas avec un simple grant
+   * d'app — seul un admin (realm admin OU grant core-admin) déclenche
+   * un remboursement. Plafond (≤ payé − déjà remboursé) +
    * idempotence refund_ref (Q9). Adapter PSP DANS la transaction (V1 :
-   * assumé, cf. docs/ops-payments.md) — échec adapter = rollback
+   * assumé, cf. docs/ops-payments.md §2.1) — échec adapter = rollback
    * complet (état + trace + réclamation n'existent pas alors).
    */
   @Post('payments/:id/refund')
-  @UseGuards(AuthGuard)
-  async refund(@Req() req: AuthRequest, @Param('id') id: string, @Body() body: unknown) {
+  @UseGuards(AuthGuard, AdminGuard)
+  async refund(
+    @Req() req: AuthRequest,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
     const user = req.user as TokenUser;
     const parsed = RefundRequestSchema.safeParse(body ?? {});
     if (!parsed.success) {
@@ -869,9 +876,9 @@ class PaymentsController {
     const ask = parsed.data;
     const existing = await store.getTxnById(this.prisma, id);
     if (!existing) throw new NotFoundException('transaction inconnue');
-    if (!(await hasAppAccess(this.prisma, user, existing.app))) {
-      throw new ForbiddenException("aucun accès à l'app demandée");
-    }
+    // Q-A : plus aucun contrôle d'accès par grant d'app ici —
+    // AdminGuard a déjà statué (admin realm OU core-admin) ;
+    // existing.app reste utilisé pour la trace d'audit.
 
     const refund = await this.prisma.$transaction(async (tx) => {
       const locked = await store.lockTxnById(tx as unknown as SqlTx, id);
