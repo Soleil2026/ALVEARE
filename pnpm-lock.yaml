@@ -435,6 +435,9 @@ importers:
 
   web/admin:
     dependencies:
+      '@alveare/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       jose:
         specifier: ^6.1.0
         version: 6.2.13

@@ -187,6 +187,16 @@ export default async function Page() {
 
           <section style={styles.card}>
             <div style={styles.row}>
+              <strong style={{ color: '#e7eaf3' }}>Paiements</strong>
+              <span>lecture seule</span>
+              <a href="/paiements" style={{ color: '#8fa3ff', fontSize: 14 }}>
+                ouvrir →
+              </a>
+            </div>
+          </section>
+
+          <section style={styles.card}>
+            <div style={styles.row}>
               <strong style={{ color: '#e7eaf3' }}>Mes documents</strong>
               <span>{state.docs.length}</span>
             </div>
