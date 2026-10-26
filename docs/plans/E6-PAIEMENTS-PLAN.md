@@ -242,3 +242,32 @@ et la revue T4.7 ; gates votées par l'opérateur le 2026-10-26.)
   event_uid plus les statuts terminaux immuables.
 - Aucune purge SQL : la régularisation passe par un nouveau paiement
   tracé (cf. Q-B).
+
+### Re-revue indépendante du delta (2026-10-26)
+
+Session fraîche distincte (auteur des correctifs ≠ relecteur). Verdict
+initial : 1 bloquant, corrigé et vérifié en re-pass :
+
+- R-B2 (bloquant, corrigé en 5d20209) : en course sur le même
+  (app, app_ref), le perdant retournait l'URL de SON checkout — une
+  session PSP non référencée en BD, encaissable mais non
+  rapprochable. Correction : settleAfterCheckout() commun
+  create/resume, URL rendue ssi notre provider_ref a été posé
+  (spent = 1) ; sinon redirect_url = null et deduped = true.
+- D-3 corrigé : le SQL brut remonte en P2010 (code pg dans le
+  message), pas en P2002 — le catch 409 event_uid est vivant.
+- Reco (a) à suivre : test d'intégration figeant la course raw
+  23505 → P2010 → 409 (le catch est sans garde-test).
+- Reco (b) appliquée : docstring aligné sur l'invariant spent = 1.
+- D-14 résiduel tracé : durcissement fail-closed de NODE_ENV
+  (traite non-dev/test comme production) — recommandé, non appliqué
+  pour ne pas casser les environnements qui ne posent pas NODE_ENV ;
+  action opérateur : poser NODE_ENV explicitement partout.
+- Sémantique `deduped` du perdant create documentée comme
+  surchargée (prudente) — à noter dans le contrat API quand le
+  champ sera exposé aux apps.
+
+Preuves au 2026-10-26 : commits 3a7234b, d3c8773, 5d20209, 854a736 ;
+build OK ; 332 tests verts (11 suites) ; e2e payments 10 preuves
+(P5 inclut le 403 D-7, P3 l'assertion fee D-10) ; régressions audit
+13 / identity 6 / documents 10 / notify 13 OK.
