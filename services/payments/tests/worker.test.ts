@@ -13,7 +13,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Job } from 'bullmq';
 
-// Bootstrap民法典 inert : NestFactory.create → app factice, listen →
+// Bootstrap neutralisé : NestFactory.create → app factice, listen →
 // promesse jamais résolue (aucun port, aucun worker réel).
 vi.mock('@nestjs/core', () => {
   const appStub = {
