@@ -198,4 +198,47 @@ international = BDL-intl V2 (schéma prêt dès V1). Détail + sources :
 
 ## 10. Déviations acceptées
 
-(à compléter à la revue, miroir E3 §10.)
+(miroir E3 §10 — décisions prises hors de ce plan pendant l'exécution
+et la revue T4.7 ; gates votées par l'opérateur le 2026-10-26.)
+
+### Gates produit (Q-A / Q-B)
+
+- Q-A / D-7 : `POST /payments/:id/refund` est réservé aux admins Core
+  (admin realm ou grant core-admin). Un grant simple d'app ne suffit
+  plus (garde AdminGuard, commit d3c8773, preuve e2e P5 avec le 403).
+- Q-B : statuts terminaux immuables, confirmé. Un `expired` qui reçoit
+  un webhook PSP tardif `paid` ne débouche sur rien en V1 (interdit) :
+  l'app crée un nouveau paiement (app_ref neuf) et l'ancien reste pour
+  l'audit. Une réouverture de machine à états serait à reconsidérer
+  en V2, ENUM et preuve anti-doublon repensées.
+
+### Correctifs de la revue T4.7 (aucun bloquant, lot D-1..D-13)
+
+- D-1 : délai réseau PAYMENTS_HTTP_TIMEOUT_MS (10 s par défaut) sur
+  les appels chargily ET le webhook sortant.
+- D-2 : un `created` sans provider_ref est repris au prochain POST
+  create (resume) ; en cas de nouvel échec il passe `failed`.
+- D-3 : violation d'unicité event_uid (pg 23505) renvoyée en 409
+  structuré.
+- D-5 / D-8 : échec de signature sortante routé dans
+  onDeliveryFailure (DLQ au cap) ; lockDuration 120 s sur le worker.
+- D-6 : PAYMENTS_PROVIDER absent = boot refusé en production ; repli
+  `dev` loggé WARN hors production.
+- D-9 : garde 15 chiffres max sur le montant (contrats + adapters,
+  pas de Number() hors garde) ; le test ancien qui acceptait
+  17 chiffres a été inversé au contrat.
+- D-10 : l'adapter dev porte fee_amount = 500 sur `paid`, avec
+  assertion en preuve e2e.
+- D-11 / D-13 : artefact CJK supprimé (zéro restant au scan) ;
+  commentaire dev-checkout exact (affiche le statut, garde e2eGate).
+
+### Résiduels assumés en V1 (documentés runbook §2.1)
+
+- L'appel PSP du refund reste DANS la transaction BD. Fenêtre de
+  crash entre débit PSP et commit : rattrapage opérateur par ré-appel
+  avec le même refund_ref (idempotent).
+- Signature webhook entrante du PSP vérifiée sur le corps seul, sans
+  fenêtre anti-replay : la protection réelle est l'idempotence
+  event_uid plus les statuts terminaux immuables.
+- Aucune purge SQL : la régularisation passe par un nouveau paiement
+  tracé (cf. Q-B).
