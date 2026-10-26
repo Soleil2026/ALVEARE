@@ -37,7 +37,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import { Job, Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import type { Request } from 'express';
@@ -59,6 +59,7 @@ import {
   transition,
   IllegalTransitionError,
   devSimulate,
+  paymentsHttpTimeoutMs,
   type PaymentProvider,
 } from '@alveare/payments';
 import type { PaymentStatus, PaymentView } from '@alveare/contracts';
@@ -204,6 +205,10 @@ export class PaymentsWorkerService implements OnModuleInit, OnModuleDestroy {
     this.worker = new Worker(PAYMENTS_WEBHOOK_OUT_QUEUE, this.processJob, {
       connection: this.connection,
       concurrency: 4,
+      // D-8 (revue T4.7) : job d'abort PSP ≤ timeout client — un
+      // fetchStatus lent ne doit jamais libérer le lock BullMQ sous le
+      // traitement (double livraison sinon).
+      lockDuration: 120_000,
     });
     this.worker.on('error', (err) =>
       console.error(`payments worker : ${String(err)}`),
@@ -287,7 +292,20 @@ export class PaymentsWorkerService implements OnModuleInit, OnModuleDestroy {
     }
 
     const t = Math.floor(Date.now() / 1000);
-    const signature = signOutbound(endpoint.secret, body, t);
+    // D-5 (revue T4.7) : le secret (signature sortante) est dans le
+    // chemin d'échec — un secret vide/absent ne doit JAMAIS mourir
+    // hors DLQ : routé via onDeliveryFailure comme un échec réseau.
+    let signature: string;
+    try {
+      signature = signOutbound(endpoint.secret, body, t);
+    } catch (err) {
+      await this.onDeliveryFailure(
+        job,
+        payload.event_uid,
+        `signature impossible : ${String(err).slice(0, 200)}`,
+      );
+      throw err; // BullMQ backoff → DLQ au cap (aucune perte silencieuse)
+    }
     let res: Response;
     try {
       res = await fetch(endpoint.url, {
@@ -297,7 +315,9 @@ export class PaymentsWorkerService implements OnModuleInit, OnModuleDestroy {
           'X-ALVEARE-Signature': signature,
         },
         body,
-        signal: AbortSignal.timeout(5000),
+        // D-1 (revue T4.7) : abort configurable, même budget que les
+        // appels PSP (aucun call réseau sans abort).
+        signal: AbortSignal.timeout(paymentsHttpTimeoutMs()),
       });
     } catch (err) {
       await this.onDeliveryFailure(job, payload.event_uid, String(err));
@@ -496,7 +516,8 @@ export class PaymentsWorkerService implements OnModuleInit, OnModuleDestroy {
     to: PaymentStatus,
     kind:
       | 'sweep-reconcile' | 'sweep-expire' | 'sweep-orphelin'
-      | 'dev-confirm' | 'dev-fail',
+      | 'dev-confirm' | 'dev-fail'
+      | 'create-fail',
     extras: { paidAt?: string | null; feeCents?: string | null } = {},
   ): Promise<boolean> {
     transition(row.status, to); // IllegalTransitionError → catch sweep
@@ -520,7 +541,9 @@ export class PaymentsWorkerService implements OnModuleInit, OnModuleDestroy {
         {
           actor: kind.startsWith('sweep')
             ? 'system:payments-sweep'
-            : 'system:payments-dev',
+            : kind === 'create-fail'
+              ? 'system:payments-create'
+              : 'system:payments-dev',
           action: `payment.${to}`,
           target: row.id,
           details: {
@@ -577,11 +600,18 @@ export class PaymentsWorkerService implements OnModuleInit, OnModuleDestroy {
     if (!row.provider_ref) {
       throw new HttpException('transaction sans référence PSP', 409);
     }
-    devSimulate(row.provider_ref, action); // journal de la PSP fictive
+    // D-10 (revue T4.7) : le simulateur porte des frais PSP (comme sur
+    // les rails réels, R5) pour que 'paid' porte fee_amount non-nul
+    // dès les e2e — invariant jamais optionnel dans les preuves.
+    devSimulate(row.provider_ref, action,
+      action === 'confirm' ? { feeAmount: '500' } : {});
     return this.applyRemoteStatus(
       row,
       action === 'confirm' ? 'paid' : 'failed',
       action === 'confirm' ? 'dev-confirm' : 'dev-fail',
+      action === 'confirm'
+        ? { paidAt: new Date().toISOString(), feeCents: '500' }
+        : {},
     );
   }
 
@@ -680,10 +710,16 @@ class PaymentsController {
     });
 
     // Idempotence create : la ligne existe déjà — replay, aucun appel
-    // PSP supplémentaire (le redirect restera le dernier connu).
+    // PSP supplémentaire (le redirect restera le dernier connu),
+    // EXCEPTÉ D-2 (revue T4.7) : une ligne 'created' dont le checkout a
+    // expiré sans provider_ref est re-réconciliée (resume) au lieu de
+    // rester orpheline pour toujours.
     if (!row) {
       row = await store.getTxnByAppRef(this.prisma, input.app, input.app_ref);
       if (!row) throw new Error('create : unicité (app, app_ref) sans ligne');
+      if (row.status === 'created' && row.provider_ref === null) {
+        return this.resumeCheckout(row);
+      }
       return { payment: viewFromRow(row), redirect_url: null, deduped: true };
     }
 
@@ -713,7 +749,9 @@ class PaymentsController {
       );
       const fresh = await store.getTxnById(this.prisma, row.id);
       if (fresh) {
-        await this.worker.applyRemoteStatus(fresh, 'failed', 'sweep-orphelin');
+        // D-12 (revue T4.7) : kind propre — l'acteur de la trace
+        // reflète le créateur (pas un sweep).
+        await this.worker.applyRemoteStatus(fresh, 'failed', 'create-fail');
       }
       throw new HttpException('création du paiement impossible', 502);
     }
@@ -747,6 +785,58 @@ class PaymentsController {
       redirect_url: co.redirectUrl,
       deduped: false,
     };
+  }
+
+  /**
+   * D-2 (revue T4.7) : reprise d'un checkout manqué — la ligne
+   * idempotente existe en 'created' sans provider_ref : on retente
+   * createCheckout puis created → pending. Un re-échec passe en
+   * 'failed' (terminal, tracé) : plus d'orphelin figé pour toujours.
+   */
+  private async resumeCheckout(row: store.TxnRow) {
+    let co: Awaited<ReturnType<PaymentProvider['createCheckout']>>;
+    try {
+      co = await this.worker.provider.createCheckout({
+        txnId: row.id,
+        app: row.app,
+        appRef: row.app_ref,
+        amountCents: row.amount,
+        currency: row.currency,
+      });
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          at: new Date().toISOString(),
+          component: 'payments-create',
+          event: 'checkout_resume_failed',
+          payment_id: row.id,
+          error: String(err).slice(0, 300),
+        }),
+      );
+      await this.worker.applyRemoteStatus(row, 'failed', 'create-fail');
+      throw new HttpException('création du paiement impossible', 502);
+    }
+    await this.prisma.$transaction(async (tx) => {
+      const spent = await store.applyStatus(
+        tx as unknown as SqlTx,
+        row.id,
+        'created',
+        'pending',
+        { providerRef: co.providerRef },
+      );
+      if (spent !== 1) {
+        console.warn(
+          JSON.stringify({
+            at: new Date().toISOString(),
+            component: 'payments-create',
+            event: 'race_resume',
+            payment_id: row.id,
+          }),
+        );
+      }
+    });
+    const fin = (await store.getTxnById(this.prisma, row.id)) ?? row;
+    return { payment: viewFromRow(fin), redirect_url: co.redirectUrl, deduped: true };
   }
 
   /** GET /payments/:id — app propriétaire OU admin (plan §4). */
@@ -953,7 +1043,12 @@ class PaymentsController {
     }
     const evt = parsed.data;
 
-    const out = await this.prisma.$transaction(async (tx) => {
+    // D-3 (revue T4.7) : une course webhook concurrente peut violer
+    // l'unicité event_uid (pg 23505 → Prisma P2002) — 409 structuré,
+    // jamais un 500 brut.
+    let out: { applied: boolean; status: string; id: string };
+    try {
+      out = await this.prisma.$transaction(async (tx) => {
       const locked = await store.getTxnByProviderRef(
         tx as unknown as SqlTx,
         evt.provider_ref,
@@ -1015,7 +1110,15 @@ class PaymentsController {
         id: locked.id,
         app: locked.app,
       };
-    });
+      });
+    } catch (err) {
+      // D-3 : doublon event_uid concurrent → 409 structuré (le reste
+      // des erreurs remonte tel quel).
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new HttpException('event_uid déjà consommé (doublon PSP)', 409);
+      }
+      throw err;
+    }
 
     if (out.applied) {
       this.worker.signalAuditDrainPublic();
@@ -1036,9 +1139,12 @@ class PaymentsController {
 
   /**
    * GET /payments/:id/dev-checkout — page « PSP fictive » de
-   * l'adapter dev (redirect_url de createCheckout). DEV exclusif
-   * (ALV_ALLOW_E2E=1, provider dev) : AUCUN état n'y est jamais lue ou
-   * écrit — la source de vérité reste le serveur (plan §2.2).
+   * l'adapter dev (redirect_url de createCheckout). DEV exclusif :
+   * 404 si ALV_ALLOW_E2E≠1 (garde e2eGate) ou provider ≠ dev — en
+   * production cette route est inexistante. Elle n'écrit AUCUN état ;
+   * elle lit la transaction pour AFFICHER son statut (la source de
+   * vérité reste le serveur, plan §2.2) et n'expose ni secret ni donnée
+   * personnelle au-delà du champ de démonstration.
    */
   @Get('payments/:id/dev-checkout')
   async devCheckout(@Param('id') id: string) {

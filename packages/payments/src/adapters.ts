@@ -45,13 +45,48 @@ export interface PaymentProvider {
   refund(providerRef: string, amountCents: string): Promise<{ providerRef: string }>;
 }
 
+/** D-1 (revue T4.7) : délai HTTP configurable (env,
+ * PAYMENTS_HTTP_TIMEOUT_MS, défaut 10 s) — aucun appel PSP sans abort. */
+export function paymentsHttpTimeoutMs(): number {
+  const raw = process.env.PAYMENTS_HTTP_TIMEOUT_MS;
+  const parsed = raw === undefined || raw.trim() === '' ? Number.NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 10_000;
+}
+
+/** Garde de précision (D-9, revue T4.7) : un montant PSP doit tenir en
+ * < 2^53 — regex 15 chiffres max AVANT tout Number() (levée refus). */
+export function assertAmountCents(amountCents: string): string {
+  if (typeof amountCents !== 'string' || !/^\d{1,15}$/.test(amountCents)) {
+    throw new Error('montant PSP invalide (15 chiffres max, chiffres seuls)');
+  }
+  return amountCents;
+}
+
 /**
- * Fabrique : PAYMENTS_PROVIDER (env, défaut 'dev') → adapter.
+ * Fabrique : PAYMENTS_PROVIDER (env) → adapter.
+ * D-6 (revue T4.7) : en PRODUCTION, absence de la variable = boot
+ * refusé — démarrer un SIMULATEUR de PSP pour l'argent est inacceptable
+ * (le défaut 'dev' n'est toléré qu'hors production, WARN explicite).
  * @throws si la valeur est inconnue OU si la config de l'adapter
  *         demandé est manquante (ex. CHARGILY_SECRET_KEY absente).
  */
 export function makePaymentProvider(): PaymentProvider {
-  const name = process.env.PAYMENTS_PROVIDER ?? 'dev';
+  const raw = process.env.PAYMENTS_PROVIDER;
+  const isProduction = process.env.NODE_ENV === 'production';
+  let name: string;
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    if (isProduction) {
+      throw new Error(
+        'PAYMENTS_PROVIDER absent — boot refusé en production (posé explicitement, jamais de défaut)',
+      );
+    }
+    console.warn(
+      'payments : PAYMENTS_PROVIDER absent en dev → adapter "dev" (simulateur, zéro réseau)',
+    );
+    name = 'dev';
+  } else {
+    name = raw.trim();
+  }
   switch (name) {
     case 'dev':
       return makeDevProvider();

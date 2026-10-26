@@ -188,7 +188,10 @@ for _ in $(seq 1 40); do
   sleep 1
 done
 [ "${trace_paid:-0}" -ge 1 ] || fail "trace payment.paid absente de audit.events après 40 s"
-echo "✓ P3 dev-confirm → paid + trace payment.paid drainée (audit.events, n=$trace_paid)"
+# D-10 (revue T4.7) : 'paid' porte des frais PSP tracés (dev = 500 c)
+fee_ok=$(psqlq "SELECT count(*) FROM payments.transactions WHERE id='${id}' AND fee_amount IS NOT NULL")
+[ "${fee_ok:-0}" -ge 1 ] || fail "fee_amount null après paid (D-10) : id=$id"
+echo "✓ P3 dev-confirm → paid + trace payment.paid drainée (audit.events, n=$trace_paid) + fee_amount tracé (D-10)"
 
 # ---------------------------------------------------------------------
 # P4) webhook SORTANT signé : le listener a vérifié le HMAC t/v1 avec

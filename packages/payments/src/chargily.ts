@@ -10,6 +10,10 @@
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  assertAmountCents,
+  paymentsHttpTimeoutMs,
+} from './adapters';
 import type {
   CheckoutInput,
   CheckoutResult,
@@ -69,10 +73,13 @@ export function makeChargilyProvider(
     method: 'POST' | 'GET',
     payload?: unknown,
   ): Promise<Record<string, unknown>> {
+    // D-1 (revue T4.7) : abort configurable — un PSP lent ne doit
+    // jamais suspendre un lock BD (refund) ou un worker BullMQ.
     const res = await impl(`${apiBase}${path}`, {
       method,
       headers: { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/json' },
       body: payload === undefined ? undefined : JSON.stringify(payload),
+      signal: AbortSignal.timeout(paymentsHttpTimeoutMs()),
     });
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) {
@@ -88,7 +95,9 @@ export function makeChargilyProvider(
     name: 'chargily',
     async createCheckout(input: CheckoutInput): Promise<CheckoutResult> {
       const resp = await call('/checkout/new', 'POST', {
-        amount: Number(input.amountCents), // v2 : entier (centimes) hors JS crypto volatil — montant borné CHECK BD amount >= 100
+        // D-9 : garde de précision AVANT Number() (écart BD ↔ PSP
+        // interdit) ; montant borné CHECK BD amount >= 100.
+        amount: Number(assertAmountCents(input.amountCents)),
         currency: input.currency,
         metadata: { alveare_txn: input.txnId }, // routage app côté Core (Q7)
       });
@@ -117,7 +126,7 @@ export function makeChargilyProvider(
       amountCents: string,
     ): Promise<{ providerRef: string }> {
       const resp = await call(`/payments/${encodeURIComponent(providerRef)}/refund`, 'POST', {
-        amount: Number(amountCents),
+        amount: Number(assertAmountCents(amountCents)), // D-9 : même garde
       });
       const providerRefOut = resp['id'] ?? resp['payment_id'];
       return { providerRef: typeof providerRefOut === 'string' ? providerRefOut : providerRef };

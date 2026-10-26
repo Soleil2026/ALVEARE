@@ -204,11 +204,16 @@ describe('PaymentCreateSchema', () => {
     expect(parsed.amount).toBe('100');
   });
 
-  it('accepte un amount transporté en string (BIGINT-safe)', () => {
-    const parsed = PaymentCreateSchema.parse({
-      app: 'app-01', app_ref: 'r1', amount: '9007199254740993', // > 2^53
-    });
-    expect(parsed.amount).toBe('9007199254740993');
+  it('rejette un amount au-delà de la précision PSP (D-9 : 15 chiffres max)', () => {
+    // 9007199254740993 (16 chiffres) > 2^53 : un Number() perdrait la
+    // précision avant l'appel PSP — refus au contrat.
+    expect(
+      PaymentCreateSchema.safeParse({ app: 'app-01', app_ref: 'r1', amount: '9007199254740993' }).success,
+    ).toBe(false);
+    // 15 chiffres : dernière valeur sûre.
+    expect(
+      PaymentCreateSchema.safeParse({ app: 'app-01', app_ref: 'r1', amount: '999999999999999' }).success,
+    ).toBe(true);
   });
 
   it('rejette amount < 100 centimes (R rail SATIM min)', () => {

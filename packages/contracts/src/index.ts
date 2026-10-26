@@ -100,6 +100,10 @@ export const PaymentCreateSchema = z
     /** centimes >= 100 (min cahier des charges / rail SATIM). */
     amount: MoneyAmountSchema.refine((v) => Number(v) >= 100, {
       message: 'amount : centimes >= 100 attendus',
+    }).refine((v) => /^\d{1,15}$/.test(v), {
+      // D-9 (revue T4.7) : précision 2^53 — au-delà de 15 chiffres, un
+      // Number() côté adapter perdrait la précision avant l'appel PSP.
+      message: 'amount : au-delà de la précision PSP (15 chiffres max)',
     }),
     currency: z.string().regex(/^[A-Z]{3}$/).default('DZD'),
     /** Q8 : rail de transparence réglementaire — dzd (national) | fx. */
@@ -175,6 +179,10 @@ export const RefundRequestSchema = z.strictObject({
   amount: MoneyAmountSchema
     .transform((v) => String(v))
     .refine((v) => Number(v) >= 1, { message: 'amount : centimes >= 1 attendus' })
+    .refine((v) => /^\d{1,15}$/.test(v), {
+      // D-9 (revue T4.7) : même garde de précision que la création.
+      message: 'amount : au-delà de la précision PSP (15 chiffres max)',
+    })
     .optional(),
   reason: z.string().min(1).max(500).nullish(),
 });

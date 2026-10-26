@@ -14,6 +14,8 @@ export {
 
 export {
   makePaymentProvider,
+  paymentsHttpTimeoutMs,
+  assertAmountCents,
   type CheckoutInput,
   type CheckoutResult,
   type FetchStatusResult,

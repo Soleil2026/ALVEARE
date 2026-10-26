@@ -50,7 +50,7 @@ describe('fabrique makePaymentProvider (boot strict)', () => {
   });
 
   it("PAYMENTS_PROVIDER inconnu → throw (démarrage refusé, aucun mode dégradé)", () => {
-    vi.stubEnv('PAYMENTS_PROVIDER', ' zdarma-iwwa');
+    vi.stubEnv('PAYMENTS_PROVIDER', 'pas-un-provider');
     expect(() => makePaymentProvider()).toThrow(/inconnu/);
     expect(() => makePaymentProvider()).toThrow(/dev \| chargily \| satim/);
   });
@@ -60,14 +60,17 @@ describe('fabrique makePaymentProvider (boot strict)', () => {
     expect(() => makePaymentProvider()).toThrow(/satim/);
   });
 
-  it('PAYMENTS_PROVIDER non défini → dev par défaut', () => {
+  it('PAYMENTS_PROVIDER non défini → dev par défaut (hors production)', () => {
     delete process.env.PAYMENTS_PROVIDER;
     expect(makePaymentProvider().name).toBe('dev');
   });
 
-  it("PAYMENTS_PROVIDER chaîne vide = inconnue → boot refusé (?? ne la masque pas)", () => {
-    vi.stubEnv('PAYMENTS_PROVIDER', '');
-    expect(() => makePaymentProvider()).toThrow(/inconnu/);
+  it("PAYMENTS_PROVIDER chaîne vide = absent → dev en dev (D-6), boot refusé en production", () => {
+    vi.stubEnv('PAYMENTS_PROVIDER', ' ');
+    expect(makePaymentProvider().name).toBe('dev'); // fallback explicite, WARN loggé
+    vi.stubEnv('NODE_ENV', 'production');
+    delete process.env.PAYMENTS_PROVIDER;
+    expect(() => makePaymentProvider()).toThrow(/PAYMENTS_PROVIDER absent/);
   });
 });
 

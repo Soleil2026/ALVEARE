@@ -51,6 +51,50 @@ refusé (aucun démarrage dégradé) :
 | `chargily` | Chargily Pay v2 : REST checkout hosted, sandbox par défaut (base `/test/`), `CHARGILY_SECRET_KEY` requise au boot sinon REFUS. LIVE = KYB opérateur (hors code). Les tests unitaires n'appellent JAMAIS le réseau (fetch injectable). | sandbox |
 | `satim` | V2 : boot refusé en V1 ; spécification + checklist d'homologation en annexe (§5). | V2 |
 
+### 2.1 Hypothèses V1 assumées & résiduels (revue T4.7 — D-1/D-2/D-4)
+
+**Refund : l'appel PSP se fait DANS la transaction BD (V1 assumé).**
+L'échec de l'adapter ne rembourse rien et ANNULE tout (état, trace,
+réclamation) via rollback. Mais si le crash survient APRÈS le débit
+PSP et AVANT le commit (fenêtre très étroite, non nulle), la
+réconciliation est manuelle :
+
+1. `SELECT status, refunded FROM payments.transactions
+   WHERE id='<txn>'` — statut resté `paid` alors que le PSP a déjà
+   débité le refund ?
+2. refaire `POST /payments/:id/refund` avec le MÊME `refund_ref`
+   (idempotent, même clé métier) : la réclamation reprend, l'appel
+   PSP part à nouveau, le commit termine le travail ;
+3. consigner l'incident (trace `payment.refunded`) et l'annexer au
+   journal du wiki. V2 : compensation asynchrone (outbox + drain) à
+   étudier si cette fenêtre se manifeste réellement en prod (R7).
+
+**Webhook SORTANT vers l'app : échec au plafond = DLQ, jamais le
+silence.** Au cap (`PAYMENTS_WEBHOOK_ATTEMPTS_CAP`) : ligne
+`payments.webhook_dead` + `console.error` structuré. Ré-émission
+d'un lot en DLQ = ré-enqueue BullMQ par l'opérateur ; l'app
+consultera de toute façon `GET /payments/:id` (source de vérité,
+plan §2.2). Chaque échec intermédiaire est loggé structuré
+(`delivery_failed`) ; au cap, trace `payment.webhook.dead` + copie
+du payload en `payments.webhook_dead`.
+
+**Lignes orphelines de création (D-2) : reprise automatique, pas de
+purge SQL.** Une ligne `created` sans `provider_ref` (checkout
+jamais abouti) est retraitée au prochain POST create (resume D-2) ;
+un re-échec la passe en `failed` (terminal, tracé). Une ligne
+`pending` expirée par le sweep (`sweep-expire`) devient `expired`
+TERMINAL — l'app relance un paiement avec un NOUVEAU `app_ref`
+(l'ancien reste consultable pour l'audit). Les statuts terminaux
+sont immuables : toute régularisation passe par un paiement NOUVEAU
+tracé, jamais par une écriture directe en BD.
+
+**Signature webhook ENTRANTE du PSP (D-4, résiduel assumé).** La
+vérification Chargily entrante porte sur le CORPS SEUL (HMAC
+sha256), sans timestamp — donc pas de fenêtre anti-replay entrante.
+La protection réelle : idempotence `event_uid` + machine à états
+(terminaux immuables) — un double webhook ne peut rien changer.
+Résiduel accepté en V1, tracé au plan §10.
+
 ## 3. Secrets / variables d'environnement
 
 Toutes posées via l'addendum idempotent de `infra/mk-dotenv.sh` (les
@@ -59,8 +103,9 @@ variables déjà présentes gagnent ; jamais écrasées) + placeholder dans
 
 | Clé | défaut | rôle |
 |---|---|---|
-| `PAYMENTS_PROVIDER` | `dev` | adapter actif (boot STRICT refusé sinon) |
+| `PAYMENTS_PROVIDER` | `dev` | adapter actif (boot STRICT refusé sinon ; en production, variable ABSENTE = boot refusé — D-6) |
 | `PAYMENTS_WEBHOOK_ATTEMPTS_CAP` | `5` | plafond de tentatives avant DLQ |
+| `PAYMENTS_HTTP_TIMEOUT_MS` | `10000` | abort de tout appel réseau (PSP + webhook sortant) — D-1 |
 | `PAYMENTS_WEBHOOK_MAX_SKEW` | `300` | fenêtre anti-replay t/v1 en secondes |
 | `PAYMENTS_TTL_SECONDS` | `1200` | silence avant auto-expiry des pending |
 | `CHARGILY_SECRET_KEY` | — | secret sandbox Chargily (compte opérateur) ; requis UNIQUEMENT si provider=chargily (refus de boot sinon) |

@@ -105,6 +105,7 @@ add_kv "$ROOT/.env" 'ALV_ALLOW_E2E' '1'
 # au moment du mk-dotenv, elle est reportée (idempotent) ; sinon
 # l'opérateur l'ajoute à la main (infra/.env.example = gabarit).
 add_kv "$ROOT/.env" 'PAYMENTS_PROVIDER' 'dev'
+add_kv "$ROOT/.env" 'PAYMENTS_HTTP_TIMEOUT_MS' "${PAYMENTS_HTTP_TIMEOUT_MS:-10000}"
 add_kv "$ROOT/.env" 'PAYMENTS_WEBHOOK_ATTEMPTS_CAP' "${PAYMENTS_WEBHOOK_ATTEMPTS_CAP:-5}"
 add_kv "$ROOT/.env" 'PAYMENTS_WEBHOOK_MAX_SKEW' '300'
 add_kv "$ROOT/.env" 'PAYMENTS_TTL_SECONDS' '1200'
