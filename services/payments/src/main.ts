@@ -765,12 +765,13 @@ class PaymentsController {
   /**
    * Post-checkout commun (create + resume D-2) : created → pending
    * via la garde atomique de la machine à états. Garde de course
-   * (re-revue delta, BLOQUANT) : l'URL du checkout n'est rendue QUE si
-   * c'est NOTRE provider_ref qui a gagné — une session PSP perdue
-   * n'est jamais référencée en BD ; son URL ne doit JAMAIS atteindre
-   * l'app (une session orpheline encaissable = argent non
-   * rapprochable). Le perdant reste inoffensif (session jamais citée,
-   * expire côté PSP) ; l'app consulte la ligne et l'url du gagnant.
+   * (re-revue delta, bloquant R-B2 levé) : l'URL du checkout n'est
+   * rendue QUE si NOTRE provider_ref a été posé en BD (spent = 1, la
+   * ligne est à pending avec notre référence). Une session PSP perdue
+   * n'est jamais référencée — son URL ne doit JAMAIS atteindre l'app
+   * (une session orpheline encaissable = argent non rapprochable).
+   * Le perdant reste inoffensif ; l'app consulte la ligne et obtient
+   * l'URL du gagnant (deduped = true → redirect_url null).
    */
   private async settleAfterCheckout(
     row: store.TxnRow,
