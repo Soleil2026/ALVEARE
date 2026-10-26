@@ -97,6 +97,23 @@ add_kv "$ROOT/.env" 'AUDIT_ATTEMPTS_CAP' "${AUDIT_ATTEMPTS_CAP:-5}"
 add_kv "$ROOT/.env" 'AUTH_E2E_CLIENTS' 'audit-e2e'
 add_kv "$ROOT/.env" 'ALV_ALLOW_E2E' '1'
 
+# E6 paiements — provider + plafonds du webhook sortant (append
+# idempotent). Provider par défaut = « dev » (simulation locale, zéro
+# réseau) ; CHARGILY_SECRET_KEY N'EST PAS générée ici : c'est le secret
+# sandbox du compte Chargily de l'OPÉRATEUR — jamais un placeholder
+# dans le .env réel. Si la variable est déjà posée dans l'environnement
+# au moment du mk-dotenv, elle est reportée (idempotent) ; sinon
+# l'opérateur l'ajoute à la main (infra/.env.example = gabarit).
+add_kv "$ROOT/.env" 'PAYMENTS_PROVIDER' 'dev'
+add_kv "$ROOT/.env" 'PAYMENTS_WEBHOOK_ATTEMPTS_CAP' "${PAYMENTS_WEBHOOK_ATTEMPTS_CAP:-5}"
+add_kv "$ROOT/.env" 'PAYMENTS_WEBHOOK_MAX_SKEW' '300'
+add_kv "$ROOT/.env" 'PAYMENTS_TTL_SECONDS' '1200'
+if [ -n "${CHARGILY_SECRET_KEY:-}" ]; then
+  add_kv "$ROOT/.env" 'CHARGILY_SECRET_KEY' "$CHARGILY_SECRET_KEY"
+  add_kv "$ROOT/infra/.env" 'CHARGILY_SECRET_KEY' "$CHARGILY_SECRET_KEY"
+  echo "mk-dotenv : CHARGILY_SECRET_KEY reportée (jamais affichée)"
+fi
+
 # --- .env.runtime (E1, PgBouncer) ---
 # Utilisé par les services applicatifs au runtime (node --env-file).
 # prisma migrate / psql restent sur .env = :5432 direct (les migrations
