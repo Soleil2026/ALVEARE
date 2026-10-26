@@ -248,7 +248,18 @@ async function ListBlock({
 }) {
   const r = await fetchPayments(q, at);
   if (r.kind === 'error') {
-    return <p style={styles.error}>{r.message}</p>;
+    // N1 (revue) : le 401 s'accompagne d'un chemin de reconnexion —
+    // pas seulement d'un message.
+    return (
+      <>
+        <p style={styles.error}>{r.message}</p>
+        {r.message.includes('reconnectez-vous') && (
+          <a href="/login" style={{ color: '#8fa3ff', fontSize: 14 }}>
+            Se connecter
+          </a>
+        )}
+      </>
+    );
   }
   const items = r.data.items;
   if (items.length === 0) {
